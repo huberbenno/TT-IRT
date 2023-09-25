@@ -27,12 +27,11 @@ def localcross(Y,tol, return_indices=False):
   v = numpy.zeros((minsize, m*b))
   res = numpy.reshape(Y, (n, m*b))
     
-  I = numpy.zeros((minsize)) # return also indices
+  I = numpy.zeros((minsize)) # also return indices
 
   val_max = numpy.max(numpy.abs(Y))
   r_tol = 1 # rank after truncation (0 tensor is also rank 1)
   for r in range(minsize):
-    # res = numpy.reshape(res, (-1,1))
     piv = numpy.argmax(res)
     piv = numpy.unravel_index(piv, numpy.shape(res))
     val = res[piv]
@@ -109,7 +108,6 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
     funevals: total number of deterministic solves
 
   """
-  # TODO paper uses c-like order, matlab fortran-like order. Problem? 
 
   # default values for optional parameters
   nswp = 5 # number of iterations
@@ -152,21 +150,21 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
   if nswp > 1:
     UAU = [None] * (d+1)  # left Galerkin reductions, matrix
     UF = [None] * (d+1)   # left Galerkin reductions, RHS
+
   UC = [None] * (d+1) # right cross samples of C on U-indices
   UC[-1] = numpy.ones((1,1))
+
   # Prepare storage for the residual
   if kickrank > 0:
-    ZZ = [None] * (d+1) # TODO get rid of ZZ
-    ZZ[-1] = numpy.ones((1,1))
-    ZU = ZZ.copy() # ZAU from the left, ZU from the right
-    ZC = ZZ.copy()
+    ZU = [None] * (d+1) # ZAU from the left, ZU from the right
+    ZU[-1] = numpy.ones((1,1))
+    ZC = ZU.copy()
     rz = numpy.round(kickrank * rc / numpy.max(rc)).astype(int)
     rz[rz<1] = 1
     rz[-1] = 1
 
   xi = numpy.ones((1, random_init))
-  if use_indices:
-    # Initialise global indices if the user function works with them
+  if use_indices: # Initialise global indices if the user function works with them
     Ju = []
 
   # First, orthogonalize the coefficient.
@@ -178,27 +176,26 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
     crc = numpy.matmul(crc, numpy.transpose(v))
     crc = numpy.reshape(crc, (rc[i], ny[i]*rc[i+1]))
     crc = numpy.transpose(crc)
-    (crc,v) = numpy.linalg.qr(crc)
-    # v = v[:, :rc[i]] # TODO useless?
+    crc,v = numpy.linalg.qr(crc)
     rc[i] = numpy.shape(crc)[1]
     ind = tt.maxvol.maxvol(crc) 
-    crc = numpy.transpose(crc) # TODO reorder ok
+    crc = numpy.transpose(crc)
     CC = crc[:, ind]
     crc = numpy.linalg.solve(CC, crc)
     v = numpy.matmul(numpy.transpose(CC), v)
     coeff[i] = numpy.reshape(crc, (rc[i], ny[i], rc[i+1]))
 
-    if use_indices:
+    if use_indices: # TODO verify correctness
       Ju = numpy.hstack(
         numpy.tile(numpy.arange(ny[i]), [rc[i+1], 1]),
         numpy.repeat(Ju, ny[i], axis=0)
-      ) # TODO verify correctness
+      ) 
       Ju = Ju[ind, :]
       
     if random_init > 0 and i > 0:
       # Random sample coeff from the right
       ind = rng.integers(ny[i], size=(random_init))
-      xi = numpy.einsum('i...j,j...->i...', coeff[i][:, ind, :], xi) # TODO verify this works
+      xi = numpy.einsum('i...j,j...->i...', coeff[i][:, ind, :], xi)
       UC[i] = xi
       ru[i] = random_init
     else:
@@ -211,7 +208,6 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
       crz = numpy.linalg.qr(crz)[0]
       rz[i] = numpy.shape(crz)[1]
       ind = tt.maxvol.maxvol(crz)
-      # crz = numpy.transpose(crz) # TODO useless
       # Sample the coefficient and solution at Z-indices
       ZC[i] = numpy.matmul(numpy.reshape(coeff[i], (rc[i]*ny[i], rc[i+1])), ZC[i+1])
       ZC[i] = numpy.reshape(ZC[i], (rc[i], ny[i] * rz[i+1]))
@@ -219,7 +215,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
       if ru[i] > rc[i]: # TODO is this a good idea
         ZU[i] = numpy.vstack((ZC[i], numpy.zeros((ru[i]-rc[i], rz[i]))))
       else:
-        ZU[i] = ZC[i][:ru[i]] # in the first iteration this is the same
+        ZU[i] = ZC[i][:ru[i]]
   
   # Init empty solution storage
   u = [None] * d
@@ -288,13 +284,13 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
 
       # Unusual ALS exit condition: after solving for the spatial block,
       # to have the non-orth center here.
-      if max_dx < tol or swp > nswp: # TODO second condition useless?
+      if max_dx < tol:
         break
 
       max_dx = 0
 
       # Truncate U0 via full-pivoted cross approx
-      U0, v = localcross(U0, tol/numpy.sqrt(d)) # TODO find suitable ttpy function
+      U0, v = localcross(U0, tol/numpy.sqrt(d))
       if swp > 1:
         u[0] = numpy.reshape(u[0], (ru[0], ny[0]*ru[1]))
         u[0] = numpy.matmul(v, u[0])
@@ -320,7 +316,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         Z0 = numpy.linalg.qr(Z0)[0]
         rz[0] = numpy.shape(Z0)[1]
         if Nxa != Nxu:
-          cru = numpy.hstack((U0, numpy.matmul(numpy.conjugate(numpy.transpose(Pua)), Z0))) # TODO why conjugate
+          cru = numpy.hstack((U0, numpy.matmul(numpy.conjugate(numpy.transpose(Pua)), Z0)))
         else:
           cru = numpy.hstack((U0, Z0))
 
@@ -343,17 +339,17 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         Uprev = numpy.matmul(Pua, U0)
       
       for j in range(rc[0]):
-        UAU_new[j] = numpy.linalg.multi_dot((numpy.conjugate(numpy.transpose(Uprev)), A0s[j], Uprev)) # TODO why conjugate
+        UAU_new[j] = numpy.linalg.multi_dot((numpy.conjugate(numpy.transpose(Uprev)), A0s[j], Uprev))
         UAU_new[j] = numpy.reshape(UAU_new[j], (-1,1))
       
       if nswp == 1:
         # we don't need to save UAU projections for all blocks, if we
         # will never iterate back
         UAU = numpy.hstack(UAU_new)
-        UF = numpy.matmul(numpy.conjugate(numpy.transpose(Uprev)), F0) # TODO why conjugate
+        UF = numpy.matmul(numpy.conjugate(numpy.transpose(Uprev)), F0)
       else:
         UAU[0] = numpy.hstack(UAU_new)
-        UF[0] = numpy.matmul(numpy.conjugate(numpy.transpose(Uprev)), F0) # TODO why conjugate
+        UF[0] = numpy.matmul(numpy.conjugate(numpy.transpose(Uprev)), F0)
 
       time_project += time.perf_counter() - t1__uc
       del UAU_new
@@ -363,11 +359,11 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         # Project onto residual basis
         ZU_new = [None] * rc[0]
         for j in range(rc[0]):
-          ZU_new[j] = numpy.linalg.multi_dot((numpy.conjugate(numpy.transpose(Z0)), A0s[j], Uprev)) # TODO why conjugate
+          ZU_new[j] = numpy.linalg.multi_dot((numpy.conjugate(numpy.transpose(Z0)), A0s[j], Uprev))
           ZU_new[j] = numpy.reshape(ZU_new[j], (-1,1))
         
         ZU[0] = numpy.hstack(ZU_new)
-        ZC[0] = numpy.matmul(numpy.conjugate(numpy.transpose(Z0)), F0) # TODO why conjugate
+        ZC[0] = numpy.matmul(numpy.conjugate(numpy.transpose(Z0)), F0)
         del ZU_new
       
       # Save some memory if we only have 1 iteration
@@ -376,11 +372,10 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         del F0
 
     else:  ##### End i == 0, Loop for reduced system ################
-      # TODO indices are shifted by -1, reconsider
       # Solve block-diagonal reduced system
       crC = numpy.reshape(coeff[i-1], (rc[i-1]*ny[i-1], rc[i]))
       crC = numpy.matmul(crC, UC[i]) # now these are indices from the right, and Galerkin from the left
-      crC = numpy.reshape(crC, (rc[i-1], ny[i-1]* ru[i]))
+      crC = numpy.reshape(crC, (rc[i-1], ny[i-1]*ru[i]))
       if nswp == 1:
         UAUi = UAU # cell-free local reduction from the left
         UFi = UF
@@ -394,14 +389,11 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
       except:
         crA = numpy.reshape(UAUi, (ru[i-1]*ru[i-1], rc[i-1]))
         crC = numpy.reshape(crC, (rc[i-1], ny[i-1]*ru[i]))
-        cru = [None] * (ny[i-1] * ru[i]) # TODO do these with slicing of ndarray?
-        for j in range(len(cru)):
+        cru = numpy.empty((ru[i-1], ny[i-1] * ru[i]))
+        for j in range(ny[i-1] * ru[i]):
           Ai = numpy.matmul(crA, crC[:,j])
           Ai = numpy.reshape(Ai, (ru[i-1], ru[i-1]))
-          cru[j] = numpy.linalg.solve(Ai, crF[:,j])
-          cru[j] = numpy.reshape(cru[j], (-1,1))
-        
-        cru = numpy.hstack(cru)
+          cru[:,j] = numpy.linalg.solve(Ai, crF[:,j])
 
       cru = numpy.reshape(cru, (ru[i-1]*ny[i-1],ru[i]))
 
@@ -416,8 +408,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
 
       if i < d and dir > 0: ##### left-right sweep ################
         # Truncate cru with cross
-        cru, v = localcross(cru, tol/numpy.sqrt(d))
-        rv = v
+        cru, rv = localcross(cru, tol/numpy.sqrt(d))
         if kickrank > 0:
           # Update the residual and enrichment
           crC = numpy.reshape(coeff[i-1],(rc[i-1]*ny[i-1], rc[i]))
@@ -427,32 +418,27 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
           Uprev = numpy.reshape(Uprev, (ru[i-1],ny[i-1]*rz[i]))
           # first enrichment
           crA = numpy.reshape(UAUi, (ru[i-1]*ru[i-1], rc[i-1]))
-          crz = [None] * (ny[i-1]*rz[i])
-          for j in range(len(crz)):
+          crz = numpy.empty((ru[i-1], ny[i-1]*rz[i]))
+          for j in range(ny[i-1]*rz[i]):
             Ai = numpy.matmul(crA, crC[:,j])
             Ai = numpy.reshape(Ai, (ru[i-1], ru[i-1]))
-            crz[j] = numpy.matmul(Ai, Uprev[:,j])
-            crz[j] = numpy.reshape(crz[j], (-1,1))
-          
-          crz = numpy.hstack(crz) # size ru1 x n*rz2
+            crz[:,j] = numpy.matmul(Ai, Uprev[:,j])
+
           crz -= numpy.matmul(UFi, crC)
           crz = numpy.reshape(crz, (ru[i-1]*ny[i-1],rz[i]))
-          v = numpy.hstack((cru, crz))
-          cru = v # TODO useless ?
+          cru = numpy.hstack((cru, crz))
           # QR u
           cru, v = numpy.linalg.qr(cru)
           v = v[:, :numpy.shape(rv)[0]]
           rv = numpy.matmul(v, rv)
           # Now the residual itself
           crA = numpy.reshape(ZU[i-1], (rz[i-1]*ru[i-1],rc[i-1]))
-          crz = [None] * (ny[i-1]*rz[i])
+          crz = numpy.empty((rz[i-1],ny[i-1]*rz[i]))
           for j in range(len(crz)):
             Ai = numpy.matmul(crA, crC[:,j])
             Ai = numpy.reshape(Ai, (rz[i-1],ru[i-1]))
-            crz[j] = numpy.matmul(Ai, Uprev[:,j])
-            crz[j] = numpy.reshape(crz[j], (-1,1))
+            crz[:,j] = numpy.matmul(Ai, Uprev[:,j])
 
-          crz = numpy.hstack(crz) # size rz1 x n*rz2
           crz -= numpy.matmul(ZC[i-1], crC)
           crz = numpy.reshape(crz, (rz[i-1]*ny[i-1], rz[i]))
         
@@ -478,13 +464,13 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
           cru = numpy.transpose(cru, [0,2,1])
           for j in range(ny[i-1]):
             v = cru[:,:,j]
-            crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), UAUi) # TODO why conj
+            crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), UAUi)
             crA = numpy.reshape(crA, (ru[i]*ru[i-1], rc[i-1]))
             crA = numpy.matmul(crA, crC[:,:,j])
             crA = numpy.reshape(crA, (ru[i], ru[i-1]*rc[i]))
             crA = numpy.transpose(crA)
             crA = numpy.reshape(crA, (ru[i-1], ru[i]*rc[i]))
-            crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), crA) # TODO why conj
+            crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), crA)
             crA = numpy.reshape(crA, (ru[i]*rc[i], ru[i]))
             crA = numpy.transpose(crA)
             UAU_new += crA
@@ -505,7 +491,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         UFi = numpy.matmul(UFi, crC)
         UFi = numpy.reshape(UFi, (ru[i-1]*ny[i-1], rc[i]))
         cru = numpy.reshape(cru, (ru[i-1]*ny[i-1], ru[i]))
-        UFi = numpy.matmul(numpy.conjugate(numpy.transpose(cru)), UFi) # TODO why conj
+        UFi = numpy.matmul(numpy.conjugate(numpy.transpose(cru)), UFi)
         
         if nswp == 1:
           UF = UFi
@@ -529,14 +515,14 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
           crz = numpy.transpose(crz, (0,2,1))
           for j in range(ny[i-1]):
             v = crz[:,:,j]
-            crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), ZU[i-1]) # TODO why conj
+            crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), ZU[i-1])
             crA = numpy.reshape(crA, (rz[i]*ru[i-1], rc[i-1]))
             crA = numpy.matmul(crA, crC[:,:,j])
             crA = numpy.reshape(crA, (rz[i], ru[i-1]*rc[i]))
             crA = numpy.transpose(crA)
             crA = numpy.reshape(crA, (ru[i-1], rz[i]*rc[i]))
             v = cru[:,:,j]
-            crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), crA) # TODO why conj
+            crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), crA)
             crA = numpy.reshape(crA, (ru[i]*rc[i], rz[i]))
             crA = numpy.transpose(crA)
             ZU[i] += crA
@@ -547,57 +533,47 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
           crC = numpy.reshape(coeff[i-1], (rc[i-1],ny[i-1]*rc[i]))
           ZC[i] = numpy.matmul(ZC[i-1], crC)
           ZC[i] = numpy.reshape(ZC[i], (rz[i-1]*ny[i-1], rc[i]))
-          ZC[i] = numpy.matmul(numpy.conjugate(numpy.transpose(crz)), ZC[i]) # TODO why conj
+          ZC[i] = numpy.matmul(numpy.conjugate(numpy.transpose(crz)), ZC[i])
           if nswp == 1:
             ZC[i-1] = None
             ZU[i-1] = None
 
       elif dir < 0: ##### right-left sweep
         cru = numpy.reshape(cru, (ru[i-1], ny[i-1]*ru[i]))
-        # truncate cru with cross
-        v, cru = localcross(cru, tol/numpy.sqrt(d))
-        # now cru is not orthogonal
-        rv = v # TODO v useless, asign directly?
+        # truncate cru with cross, now cru is not orthogonal
+        rv, cru = localcross(cru, tol/numpy.sqrt(d))
         if kickrank > 0:
           # Update the residual and enrichment
           # enrichment first
           crC = numpy.reshape(coeff[i-1], (rc[i-1]*ny[i-1], rc[i]))
           crC = numpy.matmul(crC, UC[i])
           crC = numpy.reshape(crC, (rc[i-1], ny[i-1]*ru[i]))
-          Uprev = numpy.matmul(rv, cru) # TODO ok to skip reshape?
+          Uprev = numpy.matmul(rv, cru)
           Uprev = numpy.reshape(Uprev, (ru[i-1],ny[i-1]*ru[i]))
           crA = numpy.reshape(ZU[i-1], (rz[i-1]*ru[i-1], rc[i-1]))
-          crz = [None] * (ny[i-1]*ru[i])
-          for j in range(len(crz)):
+          crz = numpy.empty((rz[i-1],ny[i-1]*ru[i]))
+          for j in range(ny[i-1]*ru[i]):
             Ai = numpy.matmul(crA, crC[:,j])
             Ai = numpy.reshape(Ai, (rz[i-1], ru[i-1]))
-            crz[j] = numpy.matmul(Ai, Uprev[:,j])
-            crz[j] = numpy.reshape(crz[j], (-1,1))
+            crz[:, j] = numpy.matmul(Ai, Uprev[:,j])
 
-          crz = numpy.hstack(crz)
           crz -= numpy.matmul(ZC[i-1], crC)
-          # crz = numpy.reshape(crz, (rz[i-1]*ny[i-1],ru[i])) # TODO ok to skip reshape
-          crz = numpy.reshape(crz, (rz[i-1], ny[i-1]*ru[i]))  # TODO crz should already have this shape
-          v = numpy.vstack((cru, crz))
+          cru = numpy.vstack((cru, crz))
           # now the residual itself
           crC = numpy.reshape(coeff[i-1], (rc[i-1]*ny[i-1], rc[i]))
           crC = numpy.matmul(crC, ZC[i]) # now these are indices from the right, and Galerkin from the left
           crC = numpy.reshape(crC, (rc[i-1], ny[i-1]*rz[i]))
-          # Uprev = numpy.matmul(rv, cru) # TODO Uprev should already have this content 
           Uprev = numpy.reshape(Uprev, (ru[i-1]*ny[i-1], ru[i]))
           Uprev = numpy.matmul(Uprev, ZU[i])
           Uprev = numpy.reshape(Uprev, (ru[i-1], ny[i-1]*rz[i]))
-          crz = [None] * (ny[i-1]*rz[i])
-          for j in range(len(crz)):
+          crz = numpy.empty((rz[i-1],ny[i-1]*rz[i]))
+          for j in range(ny[i-1]*rz[i]):
             Ai = numpy.matmul(crA, crC[:,j])
             Ai = numpy.reshape(Ai, (rz[i-1], ru[i-1]))
-            crz[j] = numpy.matmul(Ai, Uprev[:,j])
-            crz[j] = numpy.reshape(crz[j],(-1,1))
-          
-          crz = numpy.hstack(crz)
+            crz[:,j] = numpy.matmul(Ai, Uprev[:,j])
+
           crz -= numpy.matmul(ZC[i-1], crC)
           crz = numpy.reshape(crz, (rz[i-1]*ny[i-1],rz[i]))
-          cru = v # TODO why not asign cru directly above?
 
         ru[i-1] = numpy.shape(rv)[1]
         # QR u
@@ -622,11 +598,11 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         ru[i-1] = numpy.shape(cru)[0]
         u[i-1] = numpy.reshape(cru, (ru[i-1], ny[i-1], ru[i]))
 
-        if use_indices:
+        if use_indices: # TODO verify correctness
           Ju = numpy.hstack(
             numpy.tile(numpy.arange(ny[i]), [ru[i+1], 1]),
             numpy.repeat(Ju, ny[i], axis=0)
-          ) # TODO verify correctness
+          ) 
           Ju = Ju[ind, :]
 
         # Projection from the right -- sample C on U indices
