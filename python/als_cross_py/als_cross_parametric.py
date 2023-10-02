@@ -2,61 +2,8 @@ import warnings
 import tt
 import numpy
 import time
-
-
-def localcross(Y,tol, return_indices=False):
-  """
-  Full-pivoted cross for truncating one ket TT block instead of SVD
-
-  :param Y: TT block
-  :param tol: truncation tolerance
-  :param return_indices: (optional) return indices if true
-
-  :return: 
-    if ``return_indices=True`` returns tuple u,v,I; else returns tuple u,v
-  """
-  # TODO fast implementation (or find in ttpy)
-  if len(numpy.shape(Y)) == 2:
-    n,m = numpy.shape(Y)
-    b = 1
-  else:
-    n,m,b = numpy.shape(Y)
-
-  minsize = min(n, m*b)
-  u = numpy.zeros((n,minsize))
-  v = numpy.zeros((minsize, m*b))
-  res = numpy.reshape(Y, (n, m*b))
-    
-  I = numpy.zeros((minsize)) # also return indices
-
-  val_max = numpy.max(numpy.abs(Y))
-  r_tol = 1 # rank after truncation (0 tensor is also rank 1)
-  for r in range(minsize):
-    piv = numpy.argmax(res)
-    piv = numpy.unravel_index(piv, numpy.shape(res))
-    val = res[piv]
-    if val <= tol*val_max:
-      break
-
-    r_tol = r+1
-    u[:,r] = res[:,piv[1]]
-    v[r,:] = res[piv[0],:] / val
-    res -= numpy.outer(u[:,r], v[r, :])
-    I[r] = piv[0]
-
-  I = I[:r_tol]
-  u = u[:,:r_tol]
-  v = v[:r_tol,:]
-
-  # QR u
-  u, rv = numpy.linalg.qr(u)
-  v = numpy.matmul(rv, v)
-
-  if return_indices:
-    return u,v,numpy.reshape(I, (1,-1))
-  else:
-    return u,v
-
+from localcross import localcross
+from utils import solve_blockdiag, project_blockdiag
 
 
 def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
@@ -384,18 +331,8 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         UFi = UF[i-1]
       
       crF = numpy.matmul(UFi, crC)
-      try:
-        raise NotImplementedError('No fast solver available') # TODO implement
-      except:
-        crA = numpy.reshape(UAUi, (ru[i-1]*ru[i-1], rc[i-1]))
-        crC = numpy.reshape(crC, (rc[i-1], ny[i-1]*ru[i]))
-        cru = numpy.empty((ru[i-1], ny[i-1] * ru[i]))
-        for j in range(ny[i-1] * ru[i]):
-          Ai = numpy.matmul(crA, crC[:,j])
-          Ai = numpy.reshape(Ai, (ru[i-1], ru[i-1]))
-          cru[:,j] = numpy.linalg.solve(Ai, crF[:,j])
 
-      cru = numpy.reshape(cru, (ru[i-1]*ny[i-1],ru[i]))
+      cru = solve_blockdiag(UAUi,crC,crF,ru[i-1],ru[i],rc[i-1],ny[i-1])
 
       # error check
       if u[i-1] is None:
@@ -455,27 +392,8 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         # with matrix
         crC = numpy.reshape(coeff[i-1], (rc[i-1],ny[i-1],rc[i]))
         cru = numpy.reshape(cru, (ru[i-1], ny[i-1], ru[i]))
-        try:
-          raise NotImplementedError("No fast projection available")
-        except:
-          UAU_new = numpy.zeros((ru[i], ru[i]*rc[i]))
-          UAUi = numpy.reshape(UAUi, (ru[i-1], ru[i-1]*rc[i-1]))
-          crC = numpy.transpose(crC, (0,2,1))
-          cru = numpy.transpose(cru, [0,2,1])
-          for j in range(ny[i-1]):
-            v = cru[:,:,j]
-            crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), UAUi)
-            crA = numpy.reshape(crA, (ru[i]*ru[i-1], rc[i-1]))
-            crA = numpy.matmul(crA, crC[:,:,j])
-            crA = numpy.reshape(crA, (ru[i], ru[i-1]*rc[i]))
-            crA = numpy.transpose(crA)
-            crA = numpy.reshape(crA, (ru[i-1], ru[i]*rc[i]))
-            crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), crA)
-            crA = numpy.reshape(crA, (ru[i]*rc[i], ru[i]))
-            crA = numpy.transpose(crA)
-            UAU_new += crA
 
-          cru = numpy.transpose(cru, (0,2,1))
+        UAU_new = project_blockdiag(UAUi,crC,cru,ru[i-1],ru[i],rc[i-1],rc[i],ny[i-1])
         
         # Save some mem
         if nswp == 1:
