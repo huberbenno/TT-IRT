@@ -134,9 +134,9 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
 
     if use_indices: # TODO verify correctness
       Ju = numpy.hstack(
-        (numpy.tile(numpy.arange(ny[i]).reshape(-1,1), [rc[i+1], 1]),
-        numpy.repeat(Ju, ny[i], axis=0))
-      ) 
+        (numpy.repeat(numpy.arange(ny[i]), rc[i+1]).reshape(-1,1),
+        numpy.tile(Ju, [ny[i],1]))
+      )
       Ju = Ju[ind, :]
       
     if random_init > 0 and i > 0:
@@ -518,9 +518,9 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
 
         if use_indices: # TODO verify correctness
           Ju = numpy.hstack(
-            (numpy.tile(numpy.arange(ny[i-1]).reshape(-1,1), [ru[i], 1]),
-            numpy.repeat(Ju, ny[i-1], axis=0))
-          ) 
+            (numpy.repeat(numpy.arange(ny[i-1]), ru[i]).reshape(-1,1),
+            numpy.tile(Ju, [ny[i-1],1]))
+          )
           Ju = Ju[ind, :]
 
         # Projection from the right -- sample C on U indices
