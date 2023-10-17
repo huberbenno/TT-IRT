@@ -44,7 +44,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
     - ``kickrank``: max TT rank of the residual/enrichment (default 10)
     - ``random_init``: if greater than 0, take random_init random indices at
       start; if 0 (default), take maxvol indices of coeff
-    - ``used_indices``: selects the type of input for assem_solve_fun:
+    - ``use_indices``: selects the type of input for assem_solve_fun:
       ``False`` (default) assumes that the function takes values of
       the coefficients,
       ``True`` assumes that the function takes indices of parameters
@@ -112,7 +112,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
 
   xi = numpy.ones((1, random_init))
   if use_indices: # Initialise global indices if the user function works with them
-    Ju = []
+    Ju = numpy.empty((rc[-1],0), dtype=numpy.int32)
 
   # First, orthogonalize the coefficient.
   # We can derive its optimal indices (as an initial guess), or use random
@@ -134,8 +134,8 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
 
     if use_indices: # TODO verify correctness
       Ju = numpy.hstack(
-        numpy.tile(numpy.arange(ny[i]), [rc[i+1], 1]),
-        numpy.repeat(Ju, ny[i], axis=0)
+        (numpy.tile(numpy.arange(ny[i]).reshape(-1,1), [rc[i+1], 1]),
+        numpy.repeat(Ju, ny[i], axis=0))
       ) 
       Ju = Ju[ind, :]
       
@@ -210,7 +210,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         # subsequent iterations ...
       else:
         # ... where it's enough to compute the solution only
-        U0 = assem_solve_fun(Ci)[0]
+        U0 = assem_solve_fun(Ci, getLinearSystem=False)
 
       time_solve += time.perf_counter() - t1__uc
       del Ci # memory saving
@@ -257,7 +257,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
           for k in range(1,rc[0]):
             crA += A0s[k] * ZC[0][k,j]
 
-          Z0[:,j] = numpy.matmul(crA, cru[:,j])
+          Z0[:,j] = crA @ cru[:,j]
         
         Z0 -= numpy.matmul(F0, ZC[0])
         Z0 = numpy.linalg.qr(Z0)[0]
@@ -286,7 +286,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         Uprev = numpy.matmul(Pua, U0)
       
       for j in range(rc[0]):
-        UAU_new[j] = numpy.linalg.multi_dot((numpy.conjugate(numpy.transpose(Uprev)), A0s[j], Uprev))
+        UAU_new[j] = numpy.conjugate(numpy.transpose(Uprev)) @ A0s[j] @ Uprev
         UAU_new[j] = numpy.reshape(UAU_new[j], (-1,1))
       
       if nswp == 1:
@@ -306,7 +306,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         # Project onto residual basis
         ZU_new = [None] * rc[0]
         for j in range(rc[0]):
-          ZU_new[j] = numpy.linalg.multi_dot((numpy.conjugate(numpy.transpose(Z0)), A0s[j], Uprev))
+          ZU_new[j] = numpy.conjugate(numpy.transpose(Z0)) @ A0s[j] @ Uprev
           ZU_new[j] = numpy.reshape(ZU_new[j], (-1,1))
         
         ZU[0] = numpy.hstack(ZU_new)
@@ -518,8 +518,8 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
 
         if use_indices: # TODO verify correctness
           Ju = numpy.hstack(
-            numpy.tile(numpy.arange(ny[i]), [ru[i+1], 1]),
-            numpy.repeat(Ju, ny[i], axis=0)
+            (numpy.tile(numpy.arange(ny[i-1]).reshape(-1,1), [ru[i], 1]),
+            numpy.repeat(Ju, ny[i-1], axis=0))
           ) 
           Ju = Ju[ind, :]
 
@@ -561,7 +561,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
       swp += 1
       max_dx = 0
       if use_indices:
-        Ju = []
+        Ju = numpy.empty((rc[-1],0), dtype=numpy.int32)
     elif i == 0 and dir < 0:
       # turn at the left end
       dir = 1
