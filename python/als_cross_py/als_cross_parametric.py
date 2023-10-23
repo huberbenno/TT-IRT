@@ -244,14 +244,14 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
 
       ru[0] = numpy.shape(U0)[1]
 
-      if kickrank > 0:
+      if kickrank > 0 and (random_init==0 or swp>1):
         # Compute residual
         # Compute A * U at Z indices
         cru = numpy.linalg.multi_dot((U0, v, ZU[0]))
         if Nxa != Nxu:
           cru = numpy.matmul(Pua, cru)
 
-        Z0 = numpy.zeros((Nxa, rz[0]))
+        Z0 = numpy.empty((Nxa, rz[0]))
         for j in range(rz[0]):
           crA = A0s[0] * ZC[0][0,j]
           for k in range(1,rc[0]):
@@ -304,6 +304,9 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
       # Project onto residual
       if kickrank > 0:
         # Project onto residual basis
+        if random_init>0 and swp==1:
+          Z0 = numpy.linalg.qr(rng.standard_normal((Nxa, rz[0])))[0]
+          rz[0] = numpy.shape(Z0)[1]
         ZU_new = [None] * rc[0]
         for j in range(rc[0]):
           ZU_new[j] = numpy.conjugate(numpy.transpose(Z0)) @ A0s[j] @ Uprev
@@ -346,7 +349,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
       if i < d and dir > 0: ##### left-right sweep ################
         # Truncate cru with cross
         cru, rv = localcross(cru, tol/numpy.sqrt(d))
-        if kickrank > 0:
+        if kickrank > 0 and (random_init==0 or swp>1):
           # Update the residual and enrichment
           crC = numpy.reshape(coeff[i-1],(rc[i-1]*ny[i-1], rc[i]))
           crC = numpy.matmul(crC, ZC[i]) # now these are indices from the right, and Galerkin from the left
@@ -371,7 +374,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
           # Now the residual itself
           crA = numpy.reshape(ZU[i-1], (rz[i-1]*ru[i-1],rc[i-1]))
           crz = numpy.empty((rz[i-1],ny[i-1]*rz[i]))
-          for j in range(len(crz)):
+          for j in range(ny[i-1]*rz[i]):
             Ai = numpy.matmul(crA, crC[:,j])
             Ai = numpy.reshape(Ai, (rz[i-1],ru[i-1]))
             crz[:,j] = numpy.matmul(Ai, Uprev[:,j])
@@ -420,6 +423,9 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
 
         # Projections with Z
         if kickrank > 0:
+          if random_init>0 and swp==1:
+            crz = rng.standard_normal((rz[i-1] * ny[i-1], rz[i]))
+
           crz = numpy.linalg.qr(crz)[0]
           rz[i] = numpy.shape(crz)[1]
           # with matrix
