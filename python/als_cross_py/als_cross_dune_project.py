@@ -202,23 +202,24 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
       t1__uc = time.perf_counter()
 
       if swp == 1:
-        U0, A0s, F0 = assem_solve_fun(Ci)
-        Nxa = numpy.shape(A0s[0])[0]
-        F0 = numpy.hstack(F0)
+        U0, V0, UAUs, F0 = assem_solve_fun(Ci)
+        # Nxa = numpy.shape(A0s[0])[0]
+        # F0 = numpy.hstack(F0)
         # In the first sweep, Ci==C0, and we need the corresponding
         # matrices (A0s) and RHS (F0), since we'll use them in
         # subsequent iterations ...
       else:
         # ... where it's enough to compute the solution only
-        U0 = assem_solve_fun(Ci, getLinearSystem=False)
+        U0, V0, UAUs = assem_solve_fun(Ci, getLinearSystem=False)
 
       time_solve += time.perf_counter() - t1__uc
       del Ci # memory saving
       funevals += ru[0]
-      U0 = numpy.hstack(U0)
-      Nxu = numpy.shape(U0)[0] # this, again, can differ from Nxa or Nxc
-      if Nxu != Nxa and len(Pua) == 0:
-        raise RuntimeError('Numbers of spatial DOFs in u and A differ, and no transformation matrix is given. Unable to reduce model')
+      # U0 = numpy.hstack(U0)
+      # Nxu = numpy.shape(U0)[0] # this, again, can differ from Nxa or Nxc
+      Nxu = assem_solve_fun.sol_size
+      # if Nxu != Nxa and len(Pua) == 0:
+      #   raise RuntimeError('Numbers of spatial DOFs in u and A differ, and no transformation matrix is given. Unable to reduce model')
       
       # check the error
       if len(Uprev) > 0:
@@ -237,85 +238,87 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
       max_dx = 0
 
       # Truncate U0 via full-pivoted cross approx
-      U0, v = localcross(U0, tol/numpy.sqrt(d))
+      # U0, v = localcross(U0, tol/numpy.sqrt(d))
       if swp > 1:
         u[0] = numpy.reshape(u[0], (ru[0], ny[0]*ru[1]))
-        u[0] = numpy.matmul(v, u[0])
+        u[0] = numpy.matmul(V0, u[0])
 
       ru[0] = numpy.shape(U0)[1]
 
-      if kickrank > 0:
-        # Compute residual
-        # Compute A * U at Z indices
-        cru = numpy.linalg.multi_dot((U0, v, ZU[0]))
-        if Nxa != Nxu:
-          cru = numpy.matmul(Pua, cru)
+      # if kickrank > 0:
+      #   # Compute residual
+      #   # Compute A * U at Z indices
+      #   cru = numpy.linalg.multi_dot((U0, v, ZU[0]))
+      #   if Nxa != Nxu:
+      #     cru = numpy.matmul(Pua, cru)
 
-        Z0 = numpy.empty((Nxa, rz[0]))
-        for j in range(rz[0]):
-          crA = A0s[0] * ZC[0][0,j]
-          for k in range(1,rc[0]):
-            crA += A0s[k] * ZC[0][k,j]
+      #   Z0 = numpy.empty((Nxa, rz[0]))
+      #   for j in range(rz[0]):
+      #     crA = A0s[0] * ZC[0][0,j]
+      #     for k in range(1,rc[0]):
+      #       crA += A0s[k] * ZC[0][k,j]
 
-          Z0[:,j] = crA @ cru[:,j]
+      #     Z0[:,j] = crA @ cru[:,j]
         
-        Z0 -= numpy.matmul(F0, ZC[0])
-        Z0 = numpy.linalg.qr(Z0)[0]
-        rz[0] = numpy.shape(Z0)[1]
-        if Nxa != Nxu:
-          cru = numpy.hstack((U0, numpy.matmul(numpy.conjugate(numpy.transpose(Pua)), Z0)))
-        else:
-          cru = numpy.hstack((U0, Z0))
+      #   Z0 -= numpy.matmul(F0, ZC[0])
+      #   Z0 = numpy.linalg.qr(Z0)[0]
+      #   rz[0] = numpy.shape(Z0)[1]
+      #   if Nxa != Nxu:
+      #     cru = numpy.hstack((U0, numpy.matmul(numpy.conjugate(numpy.transpose(Pua)), Z0)))
+      #   else:
+      #     cru = numpy.hstack((U0, Z0))
 
-        # QR U0
-        U0, v = numpy.linalg.qr(cru)
-        v = v[:,:ru[0]]
-        if swp > 1:
-          u[0] = numpy.reshape(u[0], (ru[0], ny[0]*ru[1]))
-          u[0] = numpy.matmul(v, u[0])
+      #   # QR U0
+      #   U0, v = numpy.linalg.qr(cru)
+      #   v = v[:,:ru[0]]
+      #   if swp > 1:
+      #     u[0] = numpy.reshape(u[0], (ru[0], ny[0]*ru[1]))
+      #     u[0] = numpy.matmul(v, u[0])
 
-        ru[0] = numpy.shape(U0)[1]
+      #   ru[0] = numpy.shape(U0)[1]
 
       # Project the model onto the solution basis U0
       # UAU is very large here
       # Need to run some loops to save mem
       t1__uc = time.perf_counter()
-      UAU_new = [None] * rc[0]
+      # UAU_new = [None] * rc[0]
       Uprev = U0
-      if Nxa != Nxu:
-        Uprev = numpy.matmul(Pua, U0)
+      # if Nxa != Nxu:
+      #   Uprev = numpy.matmul(Pua, U0)
       
-      for j in range(rc[0]):
-        UAU_new[j] = numpy.conjugate(numpy.transpose(Uprev)) @ A0s[j] @ Uprev
-        UAU_new[j] = numpy.reshape(UAU_new[j], (-1,1))
+      # for j in range(rc[0]):
+      #   UAU_new[j] = numpy.conjugate(numpy.transpose(Uprev)) @ A0s[j] @ Uprev
+      #   UAU_new[j] = numpy.reshape(UAU_new[j], (-1,1))
       
       if nswp == 1:
         # we don't need to save UAU projections for all blocks, if we
         # will never iterate back
-        UAU = numpy.hstack(UAU_new)
+        # UAU = numpy.hstack(UAU_new)
+        UAU = UAUs.reshape(rc[0],-1).T
         UF = numpy.matmul(numpy.conjugate(numpy.transpose(Uprev)), F0)
       else:
-        UAU[0] = numpy.hstack(UAU_new)
+        # UAU[0] = numpy.hstack(UAU_new)
+        UAU[0] = UAUs.reshape(rc[0],-1).T
         UF[0] = numpy.matmul(numpy.conjugate(numpy.transpose(Uprev)), F0)
 
       time_project += time.perf_counter() - t1__uc
-      del UAU_new
+      # del UAU_new
 
       # Project onto residual
-      if kickrank > 0:
-        # Project onto residual basis
-        ZU_new = [None] * rc[0]
-        for j in range(rc[0]):
-          ZU_new[j] = numpy.conjugate(numpy.transpose(Z0)) @ A0s[j] @ Uprev
-          ZU_new[j] = numpy.reshape(ZU_new[j], (-1,1))
+      # if kickrank > 0:
+      #   # Project onto residual basis
+      #   ZU_new = [None] * rc[0]
+      #   for j in range(rc[0]):
+      #     ZU_new[j] = numpy.conjugate(numpy.transpose(Z0)) @ A0s[j] @ Uprev
+      #     ZU_new[j] = numpy.reshape(ZU_new[j], (-1,1))
         
-        ZU[0] = numpy.hstack(ZU_new)
-        ZC[0] = numpy.matmul(numpy.conjugate(numpy.transpose(Z0)), F0)
-        del ZU_new
+      #   ZU[0] = numpy.hstack(ZU_new)
+      #   ZC[0] = numpy.matmul(numpy.conjugate(numpy.transpose(Z0)), F0)
+      #   del ZU_new
       
       # Save some memory if we only have 1 iteration
       if nswp == 1:
-        del A0s
+        del UAUs
         del F0
 
     else:  ##### End i == 0, Loop for reduced system ################

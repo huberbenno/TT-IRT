@@ -7,32 +7,32 @@ _have_lutils = False
 try:
   _lutils = numpy.ctypeslib.load_library('libutils', "./utils")
   _lutils.solve_blockdiag.argtypes = (
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
     ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
   )
   _lutils.solve_blockdiag_parallel.argtypes = (
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
     ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
   )
 
   _lutils.project_blockdiag.argtypes = (
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
     ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
   )
   _lutils.project_blockdiag_parallel.argtypes = (
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
+    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
     ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, 
     ctypes.c_int
   )
