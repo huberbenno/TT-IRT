@@ -200,9 +200,10 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         Ci = numpy.reshape(Ci, (Mc, Nxc, ru[0]))
 
       t1__uc = time.perf_counter()
+      
 
-      if swp == 1:
-        U0, V0, UAUs, F0 = assem_solve_fun(Ci)
+      if kickrank > 0:
+        U0, V0, UAUs, UFs, ZU_new, ZC_new = assem_solve_fun(Ci,ru[0],rc[0],rz[0],ZU[0],ZC[0],rankAdaption=True, firstIter=(swp==1))
         # Nxa = numpy.shape(A0s[0])[0]
         # F0 = numpy.hstack(F0)
         # In the first sweep, Ci==C0, and we need the corresponding
@@ -210,7 +211,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         # subsequent iterations ...
       else:
         # ... where it's enough to compute the solution only
-        U0, V0, UAUs = assem_solve_fun(Ci, getLinearSystem=False)
+        U0, V0, UAUs, UFs = assem_solve_fun(Ci, ru[0],rc[0], rankAdaption=False, firstIter=(swp==1))
 
       time_solve += time.perf_counter() - t1__uc
       del Ci # memory saving
@@ -222,10 +223,12 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
       #   raise RuntimeError('Numbers of spatial DOFs in u and A differ, and no transformation matrix is given. Unable to reduce model')
       
       # check the error
-      if len(Uprev) > 0:
-        dx = numpy.linalg.norm(U0 - Uprev) / numpy.linalg.norm(U0)
-      else:
-        dx = 1
+      # TODO fix
+      # if len(Uprev) > 0:
+      #   dx = numpy.linalg.norm(U0 - Uprev) / numpy.linalg.norm(U0)
+      # else:
+      #   dx = 1
+      dx=1
       max_dx = max(max_dx, dx)
 
       print(f'=als_cross_parametric= 0 swp={swp}, max_dx={max_dx:.3e}, max_rank = {max(ru)}')
@@ -237,8 +240,7 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
 
       max_dx = 0
 
-      # Truncate U0 via full-pivoted cross approx
-      # U0, v = localcross(U0, tol/numpy.sqrt(d))
+      # cast non orth factor to next block
       if swp > 1:
         u[0] = numpy.reshape(u[0], (ru[0], ny[0]*ru[1]))
         u[0] = numpy.matmul(V0, u[0])
@@ -295,31 +297,34 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         # will never iterate back
         # UAU = numpy.hstack(UAU_new)
         UAU = UAUs.reshape(rc[0],-1).T
-        UF = numpy.matmul(numpy.conjugate(numpy.transpose(Uprev)), F0)
+        UF = UFs
       else:
         # UAU[0] = numpy.hstack(UAU_new)
         UAU[0] = UAUs.reshape(rc[0],-1).T
-        UF[0] = numpy.matmul(numpy.conjugate(numpy.transpose(Uprev)), F0)
+        UF[0] = UFs
 
       time_project += time.perf_counter() - t1__uc
       # del UAU_new
 
       # Project onto residual
-      # if kickrank > 0:
-      #   # Project onto residual basis
-      #   ZU_new = [None] * rc[0]
-      #   for j in range(rc[0]):
-      #     ZU_new[j] = numpy.conjugate(numpy.transpose(Z0)) @ A0s[j] @ Uprev
-      #     ZU_new[j] = numpy.reshape(ZU_new[j], (-1,1))
+      if kickrank > 0:
+        # Project onto residual basis
+        # ZU_new = [None] * rc[0]
+        # for j in range(rc[0]):
+        #   ZU_new[j] = numpy.conjugate(numpy.transpose(Z0)) @ A0s[j] @ Uprev
+        #   ZU_new[j] = numpy.reshape(ZU_new[j], (-1,1))
         
-      #   ZU[0] = numpy.hstack(ZU_new)
-      #   ZC[0] = numpy.matmul(numpy.conjugate(numpy.transpose(Z0)), F0)
-      #   del ZU_new
+        # ZU[0] = numpy.hstack(ZU_new)
+        # ZC[0] = numpy.matmul(numpy.conjugate(numpy.transpose(Z0)), F0)
+        ZU[0] = ZU_new.reshape(rc[0], -1).T
+        ZC[0] = ZC_new
+        rz[0] = ZC_new.shape[0]
+        del ZU_new
       
       # Save some memory if we only have 1 iteration
       if nswp == 1:
         del UAUs
-        del F0
+        # del F0
 
     else:  ##### End i == 0, Loop for reduced system ################
       # Solve block-diagonal reduced system
