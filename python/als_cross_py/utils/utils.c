@@ -39,7 +39,6 @@ void print_matrix_colmajor(char* desc, int n, int m, double* mat)
 }
 
 
-
 /*! \brief Solve block diagonal system
  *
  * @param XAX shape (rx1,rx1,rc1)
@@ -64,7 +63,8 @@ void solve_blockdiag(double* XAX1, double* CiXC2, double* rhs, int rx1, int rx2,
 
   // Main loop -- generate and solve
   tmpsize = rx1*rx1;
-  for (i=0; i<n1*rx2; i++) {
+  for (i=0; i<n1*rx2; i++)
+  {
     dgemv_(&cN, &tmpsize, &rc1, &done, XAX1, &tmpsize, &CiXC2[i*rc1], &ione, &dzero, Ai, &ione);
     dgesv_(&rx1, &ione, Ai, &rx1, ipiv, &rhs[i*rx1], &rx1, &info);
   }
@@ -102,7 +102,8 @@ void* solve_block(void* ptr)
   ipiv = (int*) malloc(sizeof(int) * args->common->rx1);
 
 
-  for (i=args->i_start; i<offset;i += args->stride){
+  for (i=args->i_start; i<offset;i += args->stride)
+  {
     dgemv_(
       &cN,
       &tmpsize,
@@ -186,30 +187,12 @@ void project_blockdiag(double* XAX1, double* Ci, double* X, double* XAX1_new, in
 */
 {
   /* Todo: Make it adaptive to complex arithmetics! */
-  double *Xperm, *Cperm, *XAX1_F;
+  double *Xtmp, *Ctmp;
   double *dtmp1, *dtmp2;
   int i,j,k, tmpsize;
 
-  // Clear output
-  memset(XAX1_new, 0, sizeof(double)*rx2*rx2*rc2);
-
-  // Permute X and C for easier BLAS (and transfer to Fortran order)
-  Xperm = (double*) malloc(sizeof(double)*rx1*rx2*n1);
-  for (i=0; i<rx1; i++)
-    for (j=0; j<n1; j++)
-      dcopy_(&rx2, &X[(i*n1+j)*rx2], &ione, &Xperm[i+j*rx1*rx2], &rx1);
-
-  Cperm = (double*) malloc(sizeof(double)*rc1*rc2*n1);
-  for (i=0; i<rc1; i++)
-    for (j=0; j<n1; j++)
-      dcopy_(&rc2, &Ci[(i*n1+j)*rc2], &ione, &Cperm[i+j*rc1*rc2], &rc1);
-
-  // get XAX1 in Fortran order
-  tmpsize = rx1*rx1;
-  XAX1_F = (double*) malloc(sizeof(double)*tmpsize*rc1);
-  for (i=0;i<rx1;++i)
-    for (j=0;j<rx1;++j)
-      dcopy_(&rc1, &XAX1[(i*rx1+j)*rc1], &ione, &XAX1_F[i+j*rx1], &tmpsize);
+  Xtmp = (double*) malloc(sizeof(double)*rx1*rx2);
+  Ctmp = (double*) malloc(sizeof(double)*rc1*rc2);
 
   // Temp storage
   // Determine the maximal size we will need
@@ -219,13 +202,19 @@ void project_blockdiag(double* XAX1, double* Ci, double* X, double* XAX1_new, in
   dtmp2 = (double*) malloc(sizeof(double)*tmpsize);
 
   // Main loop -- reduce over n
-  for (i=0; i<n1; i++) {
+  for (i=0; i<n1; i++)
+  {
+    // get relevant slice of X and C
+    for(j=0; j<rx2; ++j)
+      dcopy_(&rx1, &X[(j*n1 + i)*rx1], &ione, &Xtmp[j*rx1], &ione);
+    for(j=0; j<rc2; ++j)
+      dcopy_(&rc1, &Ci[(j*n1 + i)*rc1], &ione, &Ctmp[j*rc1], &ione);
     tmpsize = rx1*rc1;
     // tmp1 = X'*XAX1
-    dgemm_(&cT,&cN,&rx2,&tmpsize,&rx1,&done,&Xperm[i*rx1*rx2],&rx1, XAX1_F,&rx1,&dzero,dtmp1,&rx2);
+    dgemm_(&cT,&cN,&rx2,&tmpsize,&rx1,&done,Xtmp,&rx1,XAX1,&rx1,&dzero,dtmp1,&rx2);
     tmpsize = rx2*rx1;
     // tmp2 = tmp1*C
-    dgemm_(&cN,&cN,&tmpsize,&rc2,&rc1, &done,dtmp1,&tmpsize, &Cperm[i*rc1*rc2],&rc1,&dzero,dtmp2,&tmpsize);
+    dgemm_(&cN,&cN,&tmpsize,&rc2,&rc1, &done,dtmp1,&tmpsize,Ctmp,&rc1,&dzero,dtmp2,&tmpsize);
     // Permute this partial projection
     // It was rx2, rx1*rc2, should become rx1*rc2, rx2
     tmpsize = rx1*rc2;
@@ -233,7 +222,7 @@ void project_blockdiag(double* XAX1, double* Ci, double* X, double* XAX1_new, in
       dcopy_(&tmpsize, &dtmp2[j], &rx2, &dtmp1[j*tmpsize], &ione);
     // tmp2 = tmp1*X
     tmpsize = rc2*rx2;
-    dgemm_(&cT,&cN,&rx2,&tmpsize,&rx1, &done,&Xperm[i*rx1*rx2],&rx1, dtmp1,&rx1,&dzero,dtmp2,&rx2);
+    dgemm_(&cT,&cN,&rx2,&tmpsize,&rx1, &done,Xtmp,&rx1,dtmp1,&rx1,&dzero,dtmp2,&rx2);
     // Permute tmp2
     // Was rx2*rc2, rx2', needed rx2', rx2*rc2
     for (j=0; j<rx2; j++)
@@ -247,14 +236,13 @@ void project_blockdiag(double* XAX1, double* Ci, double* X, double* XAX1_new, in
 
   free(dtmp1);
   free(dtmp2);
-  free(XAX1_F);
-  free(Cperm);
-  free(Xperm);
+  free(Xtmp);
+  free(Ctmp);
 }
 
 struct project_block_common_args{
   int rx1, rx2, rc1, rc2, n1, max_tmpsize;
-  double *Xperm, *Cperm, *XAX1_F;
+  double *X, *C, *XAX1;
 };
 
 struct project_block_args{
@@ -270,20 +258,42 @@ void* project_block(void* ptr)
   struct project_block_args* args = (struct project_block_args*) ptr;
 
   double* dtmp1, *dtmp2;
+  double *Xtmp, *Ctmp;
   int tmpsize, i, j, k;
 
   dtmp1 = (double*) malloc(sizeof(double)*args->common->max_tmpsize);
   dtmp2 = (double*) malloc(sizeof(double)*args->common->max_tmpsize);
 
-  for (i=args->i_start; i<args->common->n1;i += args->stride){
+  Xtmp = (double*) malloc(sizeof(double)*args->common->rx1 * args->common->rx2);
+  Ctmp = (double*) malloc(sizeof(double)*args->common->rc1 * args->common->rc2);
+
+  for (i=args->i_start; i<args->common->n1;i += args->stride)
+  {
+    // get relevant slice of X and C
+    for(j=0; j<args->common->rx2; ++j)
+      dcopy_(
+        &args->common->rx1,
+        &args->common->X[(j*args->common->n1 + i)*args->common->rx1],
+        &ione,
+        &Xtmp[j*args->common->rx1],
+        &ione
+      );
+    for(j=0; j<args->common->rc2; ++j)
+      dcopy_(
+        &args->common->rc1,
+        &args->common->C[(j*args->common->n1 + i)*args->common->rc1],
+        &ione,
+        &Ctmp[j*args->common->rc1],
+        &ione
+      );
     tmpsize = args->common->rx1 * args->common->rc1;
     // tmp1 = X'*XAX1
     dgemm_(
       &cT, &cN,
       &args->common->rx2, &tmpsize, &args->common->rx1,
       &done,
-      &args->common->Xperm[i*args->common->rx1*args->common->rx2], &args->common->rx1, 
-      args->common->XAX1_F,&args->common->rx1,
+      Xtmp, &args->common->rx1,
+      args->common->XAX1, &args->common->rx1,
       &dzero,
       dtmp1, &args->common->rx2
     );
@@ -291,10 +301,10 @@ void* project_block(void* ptr)
     // tmp2 = tmp1*C
     dgemm_(
       &cN, &cN,
-      &tmpsize, &args->common->rc2, &args->common->rc1, 
+      &tmpsize, &args->common->rc2, &args->common->rc1,
       &done,
-      dtmp1, &tmpsize, 
-      &args->common->Cperm[i * args->common->rc1 * args->common->rc2], &args->common->rc1,
+      dtmp1, &tmpsize,
+      Ctmp, &args->common->rc1,
       &dzero,
       dtmp2, &tmpsize
     );
@@ -307,11 +317,11 @@ void* project_block(void* ptr)
     tmpsize = args->common->rc2 * args->common->rx2;
     dgemm_(
       &cT,&cN,
-      &args->common->rx2,&tmpsize,&args->common->rx1, 
+      &args->common->rx2,&tmpsize,&args->common->rx1,
       &done,
-      &args->common->Xperm[i * args->common->rx1 * args->common->rx2], &args->common->rx1, 
+      Xtmp, &args->common->rx1,
       dtmp1, &args->common->rx1,
-      &dzero, 
+      &dzero,
       dtmp2, &args->common->rx2
     );
     // Permute tmp2
@@ -323,15 +333,17 @@ void* project_block(void* ptr)
     for (j=0;j<args->common->rx2;++j)
       for (k=0;k<args->common->rc2;++k)
         daxpy_(
-          &args->common->rx2, 
-          &done, 
-          &dtmp1[args->common->rx2 * (j + args->common->rx2 * k)], &ione, 
+          &args->common->rx2,
+          &done,
+          &dtmp1[args->common->rx2 * (j + args->common->rx2 * k)], &ione,
           &args->XAX1_new_local[j*args->common->rc2+k], &tmpsize
         );
   }
 
   free(dtmp1);
   free(dtmp2);
+  free(Xtmp);
+  free(Ctmp);
 
   pthread_exit(NULL);
 }
@@ -351,29 +363,7 @@ void* project_block(void* ptr)
 void project_blockdiag_parallel(double* XAX1, double* Ci, double* X, double* XAX1_new, int rx1, int rx2, int rc1, int rc2, int n1, int nthread)
 {
   /* Todo: Make it adaptive to complex arithmetics! */
-  double *Xperm, *Cperm, *XAX1_F;
-  int i,j, tmpsize;
-
-  // Clear output
-  memset(XAX1_new, 0, sizeof(double)*rx2*rx2*rc2);
-
-  // Permute X and C for easier BLAS (and transfer to Fortran order)
-  Xperm = (double*) malloc(sizeof(double)*rx1*rx2*n1);
-  for (i=0; i<rx1; i++)
-    for (j=0; j<n1; j++)
-      dcopy_(&rx2, &X[(i*n1+j)*rx2], &ione, &Xperm[i+j*rx1*rx2], &rx1);
-
-  Cperm = (double*) malloc(sizeof(double)*rc1*rc2*n1);
-  for (i=0; i<rc1; i++)
-    for (j=0; j<n1; j++)
-      dcopy_(&rc2, &Ci[(i*n1+j)*rc2], &ione, &Cperm[i+j*rc1*rc2], &rc1);
-
-  // get XAX1 in Fortran order
-  tmpsize = rx1*rx1;
-  XAX1_F = (double*) malloc(sizeof(double)*tmpsize*rc1);
-  for (i=0;i<rx1;++i)
-    for (j=0;j<rx1;++j)
-      dcopy_(&rc1, &XAX1[(i*rx1+j)*rc1], &ione, &XAX1_F[i+j*rx1], &tmpsize);
+  int i, tmpsize;
 
   // Temp storage
   // Determine the maximal size we will need
@@ -383,9 +373,9 @@ void project_blockdiag_parallel(double* XAX1, double* Ci, double* X, double* XAX
   // Main loop is parallel
   pthread_t threads[nthread];
   double* XAX1_new_local[nthread];
-  struct project_block_common_args common = {rx1, rx2, rc1, rc2, n1, tmpsize, Xperm, Cperm, XAX1_F};
+  struct project_block_common_args common = {rx1, rx2, rc1, rc2, n1, tmpsize, X, Ci, XAX1};
   struct project_block_args args[nthread];
-  
+
   tmpsize = rx2*rx2*rc2;
   for (i=0;i<nthread;++i){
     XAX1_new_local[i] = (double*) malloc(sizeof(double)*tmpsize);
@@ -397,7 +387,7 @@ void project_blockdiag_parallel(double* XAX1, double* Ci, double* X, double* XAX
   }
 
   for(i=0;i<nthread;++i)
-    j = pthread_create(&threads[i], NULL, project_block, (void*) &args[i]);
+    pthread_create(&threads[i], NULL, project_block, (void*) &args[i]);
 
   for(i=0;i<nthread;++i)
   {
@@ -405,9 +395,4 @@ void project_blockdiag_parallel(double* XAX1, double* Ci, double* X, double* XAX
     daxpy_(&tmpsize, &done, XAX1_new_local[i], &ione, XAX1_new, &ione);
     free(XAX1_new_local[i]);
   }
-
-
-  free(XAX1_F);
-  free(Cperm);
-  free(Xperm);
 }

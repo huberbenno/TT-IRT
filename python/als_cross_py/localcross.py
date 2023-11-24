@@ -17,7 +17,6 @@ try:
 except:
   pass
 
-
 def localcross(Y,tol, return_indices=False, fast=True):
   """
   Full-pivoted cross for truncating one ket TT block instead of SVD

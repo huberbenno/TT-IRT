@@ -20,16 +20,16 @@ try:
   )
 
   _lutils.project_blockdiag.argtypes = (
-    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
-    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
-    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
     np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
     ct.c_int, ct.c_int, ct.c_int, ct.c_int, ct.c_int
   )
   _lutils.project_blockdiag_parallel.argtypes = (
-    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
-    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
-    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
     np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
     ct.c_int, ct.c_int, ct.c_int, ct.c_int, ct.c_int, 
     ct.c_int
@@ -39,13 +39,13 @@ except:
   pass
 
 
-def solve_blockdiag(UAU, crC, crF, ru1, ru2, rc1, n1, fast=True):
+def solve_blockdiag(UAU, crC, crF, ru1, ru2, rc1, n1, fast=False):
 
-  crA = np.reshape(UAU, (ru1*ru1, rc1))
   crC = np.reshape(crC, (rc1, n1*ru2))
   # fast implementation
   if _have_lutils and fast:
-    UAU = np.asfortranarray(UAU)
+    crA = np.reshape(UAU, (ru1, ru1, rc1))
+    UAU = np.asfortranarray(crA)
     crC = np.asfortranarray(crC)
     cru = np.copy(crF, order='F')
     # TODO find a better way to do this
@@ -57,6 +57,7 @@ def solve_blockdiag(UAU, crC, crF, ru1, ru2, rc1, n1, fast=True):
       _lutils.solve_blockdiag_parallel(UAU, crC, cru, ru1, ru2, rc1, n1, 2)
   else:
     # fallback
+    crA = np.reshape(UAU, (ru1*ru1, rc1))
     cru = np.empty((ru1, n1 * ru2))
     for j in range(n1 * ru2):
       Ai = np.matmul(crA, crC[:,j])
@@ -66,18 +67,22 @@ def solve_blockdiag(UAU, crC, crF, ru1, ru2, rc1, n1, fast=True):
   return cru.reshape((ru1*n1,ru2))
 
 
-def project_blockdiag(UAU,crC,cru,ru1,ru2,rc1,rc2,n1):
+def project_blockdiag(UAU,crC,cru,ru1,ru2,rc1,rc2,n1, fast=True):
+
+  UAU_new = np.zeros((ru2, ru2*rc2), order='C')
 
   # fast implementation
-  if _have_lutils:
-    UAU_new = np.empty((ru2, ru2*rc2))
+  if _have_lutils and fast:
+    UAU = np.reshape(UAU, (ru1, ru1, rc1))
+    UAU = np.asfortranarray(UAU)
+    crC = np.asfortranarray(crC)
+    cru = np.asfortranarray(cru)
     if n1 < 100:
       _lutils.project_blockdiag(UAU,crC,cru,UAU_new,ru1,ru2,rc1,rc2,n1)
     else:
       _lutils.project_blockdiag_parallel(UAU,crC,cru,UAU_new,ru1,ru2,rc1,rc2,n1,2)
   else:
     # fallback
-    UAU_new = np.zeros((ru2, ru2*rc2))
     UAU = np.reshape(UAU, (ru1, ru1*rc1))
     crC = np.transpose(crC, (0,2,1))
     cru = np.transpose(cru, [0,2,1])
