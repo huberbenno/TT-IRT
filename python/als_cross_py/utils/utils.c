@@ -44,38 +44,17 @@ void print_matrix_colmajor(char* desc, int n, int m, double* mat)
  *
  * @param XAX shape (rx1,rx1,rc1)
  * @param CiX2 shape (rc1,n1,rx2)
- * @param rhs shape (rx1,n1,rx2)
- * @param sol shape (rx1,n1,rx2)
+ * @param rhs shape (rx1,n1,rx2), will be overwritten
  * @param rx1
  * @param rx2
  * @param rc1
  * @param n1
 */
-void solve_blockdiag(double* XAX1, double* CiXC2, double* rhs, double* sol, int rx1, int rx2, int rc1, int n1)
+void solve_blockdiag(double* XAX1, double* CiXC2, double* rhs, int rx1, int rx2, int rc1, int n1)
 {
   /* Todo: Make it adaptive to complex arithmetics! */
-  double *Ai, *XAX1_F, *CiXC2_F, *sol_F;
-  int i,j, tmpsize, *ipiv, info;
-
-  // get Fortran order matrixes
-  tmpsize = rx1*rx1;
-  XAX1_F = (double*) malloc(sizeof(double)*tmpsize*rc1);
-  for (i=0;i<rx1;++i)
-    for (j=0;j<rx1;++j)
-      dcopy_(&rc1, &XAX1[(i*rx1+j)*rc1], &ione, &XAX1_F[i+j*rx1], &tmpsize);
-
-  tmpsize = rc1*n1;
-  CiXC2_F = (double*) malloc(sizeof(double)*tmpsize*rx2);
-  for (i=0;i<rc1;++i)
-    for (j=0;j<n1;++j)
-      dcopy_(&rx2, &CiXC2[(i*n1+j)*rx2], &ione, &CiXC2_F[i+j*rc1], &tmpsize);
-
-  tmpsize = rx1*n1;
-  sol_F = (double*) malloc(sizeof(double)*tmpsize*rx2);
-  for (i=0;i<rx1;++i)
-    for (j=0;j<n1;++j)
-      dcopy_(&rx2, &rhs[(i*n1+j)*rx2], &ione, &sol_F[i+j*rx1], &tmpsize);
-  // dcopy_(&tmpsize, rhs, &ione, sol, &ione);
+  double *Ai;
+  int i, tmpsize, *ipiv, info;
 
   // rxr storage
   Ai = (double*) malloc(sizeof(double)*rx1*rx1);
@@ -86,26 +65,17 @@ void solve_blockdiag(double* XAX1, double* CiXC2, double* rhs, double* sol, int 
   // Main loop -- generate and solve
   tmpsize = rx1*rx1;
   for (i=0; i<n1*rx2; i++) {
-    dgemv_(&cN, &tmpsize, &rc1, &done, XAX1_F, &tmpsize, &CiXC2_F[i*rc1], &ione, &dzero, Ai, &ione);
-    dgesv_(&rx1, &ione, Ai, &rx1, ipiv, &sol_F[i*rx1], &rx1, &info);
+    dgemv_(&cN, &tmpsize, &rc1, &done, XAX1, &tmpsize, &CiXC2[i*rc1], &ione, &dzero, Ai, &ione);
+    dgesv_(&rx1, &ione, Ai, &rx1, ipiv, &rhs[i*rx1], &rx1, &info);
   }
-
-  // get solution in C-order
-  tmpsize = rx1*n1;
-  for (i=0;i<rx1;++i)
-    for (j=0;j<n1;++j)
-      dcopy_(&rx2, &sol_F[i+j*rx1], &tmpsize, &sol[(i*n1+j)*rx2], &ione);
 
   free(ipiv);
   free(Ai);
-  free(XAX1_F);
-  free(CiXC2_F);
-  free(sol_F);
 }
 
 struct solve_block_common_args{
   int rx1, rx2, rc1, n1;
-  double* const XAX1_F, *CiXC2_F, *sol_F, *sol;
+  double* const XAX1, *CiXC2, *rhs;
 };
 
 struct solve_block_args{
@@ -120,7 +90,7 @@ void* solve_block(void* ptr)
   struct solve_block_args* args = (struct solve_block_args*) ptr;
 
   double* Ai;
-  int *ipiv, tmpsize, info, offset, i, j, k;
+  int *ipiv, tmpsize, info, offset, i;
 
   offset = args->common->rx2 * args->common->n1;
   tmpsize = args->common->rx1 * args->common->rx1;
@@ -138,9 +108,9 @@ void* solve_block(void* ptr)
       &tmpsize,
       &args->common->rc1,
       &done,
-      args->common->XAX1_F,
+      args->common->XAX1,
       &tmpsize,
-      &args->common->CiXC2_F[i * args->common->rc1],
+      &args->common->CiXC2[i * args->common->rc1],
       &ione,
       &dzero,
       Ai,
@@ -151,19 +121,9 @@ void* solve_block(void* ptr)
       Ai,
       &args->common->rx1,
       ipiv,
-      &args->common->sol_F[i * args->common->rx1],
+      &args->common->rhs[i * args->common->rx1],
       &args->common->rx1,
       &info);
-
-    // copy into output array (C-order)
-    j = i % args->common->n1;
-    k = i / args->common->n1;
-    dcopy_(
-      &args->common->rx1,
-      &args->common->sol_F[i * args->common->rx1],
-      &ione,
-      &args->common->sol[j*args->common->rx2 + k],
-      &offset);
   }
 
   free(Ai);
@@ -176,42 +136,21 @@ void* solve_block(void* ptr)
  *
  * @param XAX shape (rx1,rx1,rc1)
  * @param CiX2 shape (rc1,n1,rx2)
- * @param rhs shape (rx1,n1,rx2)
- * @param sol shape (rx1,n1,rx2)
+ * @param rhs shape (rx1,n1,rx2), will be overwritten
  * @param rx1
  * @param rx2
  * @param rc1
  * @param n1
  * @param nthread number of CPU threads to use
 */
-void solve_blockdiag_parallel(double* XAX1, double* CiXC2, double* rhs, double* sol, int rx1, int rx2, int rc1, int n1, int nthread)
+void solve_blockdiag_parallel(double* XAX1, double* CiXC2, double* rhs, int rx1, int rx2, int rc1, int n1, int nthread)
 {
   /* Todo: Make it adaptive to complex arithmetics! */
-  double *XAX1_F, *CiXC2_F, *sol_F;
-  int i,j, tmpsize;
-
-  // Fortran order matrixes
-  tmpsize = rx1*rx1;
-  XAX1_F = (double*) malloc(sizeof(double)*tmpsize*rc1);
-  for (i=0;i<rx1;++i)
-    for (j=0;j<rx1;++j)
-      dcopy_(&rc1, &XAX1[(i*rx1+j)*rc1], &ione, &XAX1_F[i+j*rx1], &tmpsize);
-
-  tmpsize = rc1*n1;
-  CiXC2_F = (double*) malloc(sizeof(double)*tmpsize*rx2);
-  for (i=0;i<rc1;++i)
-    for (j=0;j<n1;++j)
-      dcopy_(&rx2, &CiXC2[(i*n1+j)*rx2], &ione, &CiXC2_F[i+j*rc1], &tmpsize);
-
-  tmpsize = rx1*n1;
-  sol_F = (double*) malloc(sizeof(double)*tmpsize*rx2);
-  for (i=0;i<rx1;++i)
-    for (j=0;j<n1;++j)
-      dcopy_(&rx2, &rhs[(i*n1+j)*rx2], &ione, &sol_F[i+j*rx1], &tmpsize);
+  int i;
 
   // Main loop is parallel
   pthread_t threads[nthread];
-  struct solve_block_common_args common = {rx1, rx2, rc1, n1, XAX1_F, CiXC2_F, sol_F, sol};
+  struct solve_block_common_args common = {rx1, rx2, rc1, n1, XAX1, CiXC2, rhs};
   struct solve_block_args args[nthread];
 
   for (i=0;i<nthread;++i){
@@ -221,14 +160,10 @@ void solve_blockdiag_parallel(double* XAX1, double* CiXC2, double* rhs, double* 
   }
 
   for(i=0;i<nthread;++i)
-    j = pthread_create(&threads[i], NULL, solve_block, (void*) &args[i]);
+    pthread_create(&threads[i], NULL, solve_block, (void*) &args[i]);
 
   for(i=0;i<nthread;++i)
     pthread_join(threads[i], NULL);
-
-  free(XAX1_F);
-  free(CiXC2_F);
-  free(sol_F);
 
   return;
 }

@@ -1,99 +1,97 @@
-import numpy
-import ctypes
+import numpy as np
+import ctypes as ct
 import os
 
 # try to load fast implementation
 _have_lutils = False
 try:
-  _lutils = numpy.ctypeslib.load_library('libutils', "./utils")
+  _lutils = np.ctypeslib.load_library('libutils', "./utils")
   _lutils.solve_blockdiag.argtypes = (
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
+    ct.c_int, ct.c_int, ct.c_int, ct.c_int
   )
   _lutils.solve_blockdiag_parallel.argtypes = (
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='F'),
+    ct.c_int, ct.c_int, ct.c_int, ct.c_int, ct.c_int
   )
 
   _lutils.project_blockdiag.argtypes = (
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
+    ct.c_int, ct.c_int, ct.c_int, ct.c_int, ct.c_int
   )
   _lutils.project_blockdiag_parallel.argtypes = (
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    numpy.ctypeslib.ndpointer(dtype=numpy.float64, flags='C'),
-    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, 
-    ctypes.c_int
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
+    np.ctypeslib.ndpointer(dtype=np.float64, flags='C'),
+    ct.c_int, ct.c_int, ct.c_int, ct.c_int, ct.c_int, 
+    ct.c_int
   )
   _have_lutils = True
 except:
   pass
 
 
-def solve_blockdiag(UAU, crC, crF, ru1, ru2, rc1, n1):
-  
+def solve_blockdiag(UAU, crC, crF, ru1, ru2, rc1, n1, fast=True):
+
+  crA = np.reshape(UAU, (ru1*ru1, rc1))
+  crC = np.reshape(crC, (rc1, n1*ru2))
   # fast implementation
-  if _have_lutils:
-    cru = numpy.empty((ru1*n1,ru2))
+  if _have_lutils and fast:
+    UAU = np.asfortranarray(UAU)
+    crC = np.asfortranarray(crC)
+    cru = np.copy(crF, order='F')
     # TODO find a better way to do this
     if ru2*n1 < os.cpu_count(): # no threading for small number of blocks 
-      _lutils.solve_blockdiag(UAU, crC, crF, cru, ru1, ru2, rc1, n1)
+      _lutils.solve_blockdiag(UAU, crC, cru, ru1, ru2, rc1, n1)
     elif ru1 < 150:
-      _lutils.solve_blockdiag_parallel(UAU, crC, crF, cru, ru1, ru2, rc1, n1, os.cpu_count())
+      _lutils.solve_blockdiag_parallel(UAU, crC, cru, ru1, ru2, rc1, n1, os.cpu_count())
     else: # for ru1>=150 LAPack is parallel (on my machine TM)
-      _lutils.solve_blockdiag_parallel(UAU, crC, crF, cru, ru1, ru2, rc1, n1, 2)
-    return cru
+      _lutils.solve_blockdiag_parallel(UAU, crC, cru, ru1, ru2, rc1, n1, 2)
+  else:
+    # fallback
+    cru = np.empty((ru1, n1 * ru2))
+    for j in range(n1 * ru2):
+      Ai = np.matmul(crA, crC[:,j])
+      Ai = np.reshape(Ai, (ru1, ru1))
+      cru[:,j] = np.linalg.solve(Ai, crF[:,j])
 
-  # fallback
-  crA = numpy.reshape(UAU, (ru1*ru1, rc1))
-  crC = numpy.reshape(crC, (rc1, n1*ru2))
-  cru = numpy.empty((ru1, n1 * ru2))
-  for j in range(n1 * ru2):
-    Ai = numpy.matmul(crA, crC[:,j])
-    Ai = numpy.reshape(Ai, (ru1, ru1))
-    cru[:,j] = numpy.linalg.solve(Ai, crF[:,j])
-
-  return numpy.reshape(cru, (ru1*n1,ru2))
+  return cru.reshape((ru1*n1,ru2))
 
 
 def project_blockdiag(UAU,crC,cru,ru1,ru2,rc1,rc2,n1):
 
   # fast implementation
   if _have_lutils:
-    UAU_new = numpy.empty((ru2, ru2*rc2))
+    UAU_new = np.empty((ru2, ru2*rc2))
     if n1 < 100:
       _lutils.project_blockdiag(UAU,crC,cru,UAU_new,ru1,ru2,rc1,rc2,n1)
     else:
       _lutils.project_blockdiag_parallel(UAU,crC,cru,UAU_new,ru1,ru2,rc1,rc2,n1,2)
-    return UAU_new
-
-  # fallback
-  UAU_new = numpy.zeros((ru2, ru2*rc2))
-  UAU = numpy.reshape(UAU, (ru1, ru1*rc1))
-  crC = numpy.transpose(crC, (0,2,1))
-  cru = numpy.transpose(cru, [0,2,1])
-  for j in range(n1):
-    v = cru[:,:,j]
-    crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), UAU)
-    crA = numpy.reshape(crA, (ru2*ru1, rc1))
-    crA = numpy.matmul(crA, crC[:,:,j])
-    crA = numpy.reshape(crA, (ru2, ru1*rc2))
-    crA = numpy.transpose(crA)
-    crA = numpy.reshape(crA, (ru1, ru2*rc2))
-    crA = numpy.matmul(numpy.conjugate(numpy.transpose(v)), crA)
-    crA = numpy.reshape(crA, (ru2*rc2, ru2))
-    crA = numpy.transpose(crA)
-    UAU_new += crA
+  else:
+    # fallback
+    UAU_new = np.zeros((ru2, ru2*rc2))
+    UAU = np.reshape(UAU, (ru1, ru1*rc1))
+    crC = np.transpose(crC, (0,2,1))
+    cru = np.transpose(cru, [0,2,1])
+    for j in range(n1):
+      v = cru[:,:,j]
+      crA = np.matmul(np.conjugate(np.transpose(v)), UAU)
+      crA = np.reshape(crA, (ru2*ru1, rc1))
+      crA = np.matmul(crA, crC[:,:,j])
+      crA = np.reshape(crA, (ru2, ru1*rc2))
+      crA = np.transpose(crA)
+      crA = np.reshape(crA, (ru1, ru2*rc2))
+      crA = np.matmul(np.conjugate(np.transpose(v)), crA)
+      crA = np.reshape(crA, (ru2*rc2, ru2))
+      crA = np.transpose(crA)
+      UAU_new += crA
 
   return UAU_new

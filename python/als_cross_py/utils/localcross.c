@@ -88,49 +88,38 @@ void print_matrix_colmajor(char* desc, int n, int m, double* mat)
 
 /*! \brief Compute localcross (double version)
  *
- * @param Y input of size nxm
+ * @param Y input of size n*m (will be overwritten)
  * @param n number of rows of Y
  * @param m number of columns of Y
  * @param tol tolerance
- * @param U will point to array containing U of size nxr
- * @param V will point to array containing V of size rxm
- * @param I will point to array containing indices of size r
+ * @param u pointer to array u in F order
+ * @param vt pointer to transposed array vt in F order
+ * @param I pointer to index array
  * @param rank rank of the decomposition
 */
-void localcross_f64(double* Y, int n, int m, double tol, double** U, double** V, double** I, int* rank, char order)
+void localcross_f64(double* Y, int n, int m, double tol, double* u, double* vt, double* I, int* rank)
 {
-  double *u, *vt, *res, *ind, *work, val_max, val;
+  double *work, val_max, val;
   int minsz, sz, r, piv1, piv2, i;
 
   minsz = (m<n) ? m : n;
 
-  u = (double *)malloc(sizeof(double)*n*minsz);
-  vt = (double *)malloc(sizeof(double)*minsz*m);
-  res = (double *)malloc(sizeof(double)*n*m);
-  ind = (double *)malloc(sizeof(double)*minsz);
-
   sz = n*m;
-  switch (order)
-  {
-    case 'F': dcopy_(&sz, Y, &ione, res, &ione); break;
-    case 'C': for(i=0;i<m;++i) dcopy_(&n, &Y[i], &m, &res[i*n], &ione); break;
-    default: printf("order must be \'C\' or \'F\'\n");
-  }
 
   // find max element value of Y
   val_max = 0.0;
-  for (i=0; i<n*m; i++)
+  for (i=0; i<sz; i++)
     if (fabs(Y[i])>val_max)
       val_max = fabs(Y[i]);
 
   // Main loop 
   for (r=0; r<minsz; r++) {
-    // Find the maximal element of res
+    // Find the maximal element of Y
     val=0.0;
-    for (i=0; i<n*m; i++)
-      if (fabs(res[i])>val){
+    for (i=0; i<sz; i++)
+      if (fabs(Y[i])>val){
         piv2 = i;
-        val = fabs(res[piv2]);
+        val = fabs(Y[piv2]);
       }
 
     if (val<=tol*val_max) break;
@@ -139,57 +128,57 @@ void localcross_f64(double* Y, int n, int m, double tol, double** U, double** V,
     piv1 = piv2 % n;
     piv2 = piv2 / n;
     // update index array
-    ind[r] = (double) piv1;
+    I[r] = (double) piv1;
     // update u and v
-    dcopy_(&n, &res[piv2*n], &ione, &u[r*n], &ione);
-    dcopy_(&m, &res[piv1], &n, &vt[r*m], &ione);
+    dcopy_(&n, &Y[piv2*n], &ione, &u[r*n], &ione);
+    dcopy_(&m, &Y[piv1], &n, &vt[r*m], &ione);
     // scale column of vt by pivot 
-    val = 1.0 / res[piv1+piv2*n];
+    val = 1.0 / Y[piv1+piv2*n];
     dscal_(&m,&val,&vt[r*m],&ione);
-    // compute res = res - u(:,r)*v(r,:)
+    // compute Y = Y - u(:,r)*v(r,:)
     val = -1.0;
-    dger_(&n, &m, &val, &u[r*n], &ione, &vt[r*m],&ione, res, &n);
+    dger_(&n, &m, &val, &u[r*n], &ione, &vt[r*m],&ione, Y, &n);
   }
   if (r==0) {
     // There was a zero matrix
     r=1;
     memset(u, 0, sizeof(double)*n);
     memset(vt, 0, sizeof(double)*m);
-    ind[0] = 1.;
+    I[0] = 1.;
   }
-  *rank = r;  
+  else {
+    // QR u
+    sz = -1;
+    dgeqrf_(&n, &r, u, &n, &Y[1], &Y[0], &sz, &i);
+    sz = (int)Y[0];
+    work = (double *)malloc(sizeof(double)*sz);
+    dgeqrf_(&n, &r, u, &n, Y, work, &sz, &i);
+    dtrmm_(&cR, &cU, &cT, &cN, &m, &r, &done, u, &n, vt, &m);
+    dorgqr_(&n, &r, &r, u, &n, Y, work, &sz, &i);
+    free(work);
+  }
 
-  // QR u
-  sz = -1;
-  dgeqrf_(&n, &r, u, &n, &res[1], &res[0], &sz, &i);
-  sz = (int)res[0];
-  work = (double *)malloc(sizeof(double)*sz);
-  dgeqrf_(&n, &r, u, &n, res, work, &sz, &i);
-  dtrmm_(&cR, &cU, &cT, &cN, &m, &r, &done, u, &n, vt, &m);
-  dorgqr_(&n, &r, &r, u, &n, res, work, &sz, &i);
-  
-  free(work);
-  free(res);
+  *rank = r;
 
   // Return outputs
 
-  sz = n*r;
-  *U = (double *)malloc(sizeof(double)*sz);
+  // sz = n*r;
+  // *U = (double *)malloc(sizeof(double)*sz);
   // output in C order
-  for(i=0; i<r; ++i) dcopy_(&n, &u[i*n], &ione, &(*U)[i], &r);
+  // for(i=0; i<r; ++i) dcopy_(&n, &u[i*n], &ione, &(*U)[i], &r);
   // dcopy_(&sz, u, &ione, *U, &ione);
 
-  sz = m*r;
-  *V = (double *)malloc(sizeof(double)*sz);
+  // sz = m*r;
+  // *V = (double *)malloc(sizeof(double)*sz);
   // vt should be transposed
   // but output in C order
-  dcopy_(&sz, vt, &ione, *V, &ione);
+  // dcopy_(&sz, vt, &ione, *V, &ione);
   // for (i=0; i<r; i++) dcopy_(&m, &vt[i*m], &ione, &(*V)[i], &r);
     
-  *I = (double *)malloc(sizeof(double)*r);
-  dcopy_(&r, ind, &ione, *I, &ione);
+  // *I = (double *)malloc(sizeof(double)*r);
+  // dcopy_(&r, ind, &ione, *I, &ione);
 
-  free(u);
-  free(vt);
-  free(ind);
+  // free(u);
+  // free(vt);
+  // free(ind);
 }
