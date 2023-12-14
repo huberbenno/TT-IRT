@@ -201,9 +201,9 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
 
       t1__uc = time.perf_counter()
       
-
+      print(ru[0],rc[0],Ci.shape[0])
       if kickrank > 0:
-        U0, V0, UAUs, UFs, ZU_new, ZC_new = assem_solve_fun(Ci,ru[0],rc[0],rz[0],ZU[0],ZC[0],rankAdaption=True, firstIter=(swp==1))
+        U0, V0, UAUs, UFs, ZU_new, ZC_new = assem_solve_fun(Ci,tol/numpy.sqrt(d),ru[0],rc[0],rz[0],ZU[0],ZC[0],rankAdaption=True, firstIter=(swp==1))
         # Nxa = numpy.shape(A0s[0])[0]
         # F0 = numpy.hstack(F0)
         # In the first sweep, Ci==C0, and we need the corresponding
@@ -211,8 +211,8 @@ def als_cross_parametric(coeff, assem_solve_fun, tol , **varargin):
         # subsequent iterations ...
       else:
         # ... where it's enough to compute the solution only
-        U0, V0, UAUs, UFs = assem_solve_fun(Ci, ru[0],rc[0], rankAdaption=False, firstIter=(swp==1))
-
+        U0, V0, UAUs, UFs = assem_solve_fun(Ci, tol/numpy.sqrt(d), ru[0],rc[0], rankAdaption=False, firstIter=(swp==1))
+        
       time_solve += time.perf_counter() - t1__uc
       del Ci # memory saving
       funevals += ru[0]
