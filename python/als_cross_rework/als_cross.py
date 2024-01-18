@@ -131,12 +131,36 @@ class als_cross:
       return cores, v, r
   
   def spatial_core_forward(self):
+
+    # store previous iteration
+    U_prev = self.U0
+
+    # evaluate at u indices
+    self.prof.start('t_solve')
+    if self.swp == 1:
+      self.U0, self.A0, self.F0 = self.assem_solve_fun(self.Ju, getLinearSystem=True)
+    else:
+      # only need matrix and RHS in first iteration
+      self.U0 = self.assem_solve_fun(self.Ju, getLinearSystem=False)
+    
+    self.prof.stop('t_solve')
+    self.prof.increment('n_PDE_eval', self.ru[0])
+
+    self.U0 = np.hstack(self.U0)
+
+    # check error
+    if U_prev is not None:
+      dx = np.linalg.norm(self.U0 - U_prev) / np.linalg.norm(self.U0)
+    else:
+      dx = np.infty
+    self.max_dx = max(self.max_dx, dx)
+
+
+
+  def step_forward(self, i):
     pass
 
-  def step_forward(self):
-    pass
-
-  def step_backward(self):
+  def step_backward(self, i):
     pass
 
   def __init__(self, params, assem_solve_fun, tol, **args):
@@ -232,9 +256,11 @@ class als_cross:
     self.U0 = None
     self.u = [None] * self.d
 
-    # init main loop flags and counters
+    # init main loop flags, counters etc.
     self.forward_is_next = True
-    self.swp = 1
+    self.swp = 1                # iteration counter
+    self.max_dx = 0             # tracks max error over all cores
+    self.tol_reached = False    # set if tolerance check passes
     
     # init profiler
     self.prof = self.profiler(['t_solve, t_project'], ['n_PDE_eval'])
@@ -247,12 +273,12 @@ class als_cross:
       if self.forward_is_next:
         self.spatial_core_forward()
         for i in range(1, self.d_param+1):
-          self.step_forward()
+          self.step_forward(i)
         
         self.forward_is_next = False
       else:
         for i in reversed(range(1, self.d_param+1)):
-          self.step_backward()
+          self.step_backward(i)
 
         self.forward_is_next = True
 
