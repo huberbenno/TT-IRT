@@ -3,6 +3,8 @@ import tt
 import warnings
 from time import perf_counter
 
+from localcross import localcross
+
 
 class als_cross:
   """
@@ -61,6 +63,7 @@ class als_cross:
     self.nswp = 5
     self.kickrank = 10 
     self.random_init = 0
+    self.verbose = 1
 
     # parse parameters
     for (arg, val) in args.items():
@@ -71,11 +74,13 @@ class als_cross:
           self.kickrank = val
         case 'random_init':
           self.random_init = val
+        case 'verbose':
+          self.verbose = val
         case _:
           warnings.warn('unknown argument \'' + arg + '\'', SyntaxWarning)
   
 
-  def orthogonalize_tensor(cores, return_indices=True):
+  def orthogonalize_tensor(C0, cores, return_indices=True):
     """
     Orthogonalize TT tensor.
 
@@ -88,28 +93,28 @@ class als_cross:
 
     Returns
     -------
+    C0: ndarray
+      updated first core
     cores: sequence of ndarrays
-      list with updated TT cores
-    v : ndarray
-      non-orthogonal factor cast from first core
+      list with rest of updated TT cores
     r : ndarray
       array containing updated TT ranks
     (indices) : sequence of ndarrays, optional
       list with maxvol indices
     """
     d = len(cores)
-    r = np.ones(d+1, dtype=np.int32)
+    r = np.ones(d, dtype=np.int32)
     v = np.ones((1,1))
     if return_indices:
       indices = []
 
-    for i in reversed(range(d)):
+    for i in reversed(range(1, d)):
       # cast non-orth block from previous iteration into core
-      r[i], n = cores[i].shape[:2]
-      cr = cores[i].reshape((r[i]*n, -1))
+      r[i-1], n = cores[i].shape[:2]
+      cr = cores[i].reshape((r[i-1]*n, -1))
       cr = cr @ v
       # QR core (note transpose)
-      cr = cr.reshape((r[i], -1)).T
+      cr = cr.reshape((r[i-1], -1)).T
       cr, v = np.linalg.qr(cr)
       # update rank (in case core has rank deficiency)
       r[i] = cr.shape[1]
@@ -123,15 +128,112 @@ class als_cross:
       cr = np.linalg.solve(CC, cr)
       v = v.T @ CC
       # update core
-      cores[i] = cr.reshape((r[i],n,r[i+1]))
+      cores[i] = cr.reshape((r[i-1],n,r[i]))
+    
+    M, N, R = C0.shape
+    C0 = C0.reshape(-1, R) @ v
+    C0.reshape(M,N,r[0])
 
     if return_indices:
-      return cores, v, r, indices
+      return C0, cores, r, indices
     else:
-      return cores, v, r
+      return C0, cores, r
   
   def spatial_core_forward(self):
-    pass
+    # store previous U
+    U_prev = self.U0
+
+    self.prof.start('t_solve')
+
+    # get matrix and rhs in first iteration
+    if self.swp == 1:
+      self.U0, self.A0, self.F0 = self.assem_solve_fun(self.Ju)
+      self.Nx = self.U0[0].shape[0]
+      self.F0 = np.hstack(self.F0)
+    else:
+      self.U0 = self.assem_solve_fun(self.Ju, linear_system=False)
+
+    self.U0 = np.hstack(self.U0)
+
+    self.prof.stop('t_solve')
+    self.prof.increment('n_PDE_eval')
+
+    # check error
+    dx = 1 
+    if U_prev is not None:
+      dx = np.linalg.norm(self.U0 - U_prev) / np.linalg.norm(self.U0)
+
+    self.max_dx = max(self.max_dx, dx)
+
+    if self.verbose > 0:
+      print(f'=swp={self.swp} core 0, max_dx={self.max_dx:.3e}, max_rank = {max(self.ru)}')
+
+    # exit if tolerance is met
+    if self.max_dx < self.tol:
+      return True
+
+    # truncate U0
+    self.U0, v = localcross(self.U0, self.tol/np.sqrt(self.n_param))
+    self.ru[0] = self.U0.shape[1]
+    # cast non-orth factor to next core
+    if self.swp > 1:
+      self.u[0] = v @ self.u[0].reshape(v.shape[-1], -1)
+    
+    # rank adaption
+    if self.kickrank > 0: # TODO and (random_init==0 or swp>1)
+      # compute residual at Z indices
+      self.Z0 = np.empty((self.Nx, self.rz[0]))
+      cru = self.U0 @ v @ self.ZU[0]
+      for j in range(self.rz[0]):
+        crA = np.zeros((self.Nx, self.Nx))
+        for k in range(self.rc[0]):
+          crA += self.A0[k] * self.ZC[0][k,j]
+
+        self.Z0[:,j] = crA @ cru[:,j]
+
+      self.Z0 -= self.F0 @ self.ZC[0]
+
+      # QR residual
+      self.Z0 = np.linalg.qr(self.Z0)[0]
+      self.rz[0] = self.Z0.shape[1]
+      # append residual to U core
+      cru = np.hstack((self.U0, self.Z0))
+
+      # QR enriched core
+      self.U0, v = np.linalg.qr(cru)
+      if self.swp > 1:
+        self.u[0] = v[:,:self.ru[0]] @ u[0].reshape(self.ru[0], -1)
+      
+      self.ru[0] = self.U0.shape[1]
+    
+    # TODO evaluate if loop for projection are necessary
+    # Project onto solution basis U0
+    self.prof.start('t_project')
+   
+    UAU_new = [None] * self.rc[0]
+    Uprev = self.U0
+
+    for j in range(self.rc[0]):
+      UAU_new[j] = np.conjugate(Uprev.T) @ self.A0[j] @ Uprev
+      UAU_new[j] = UAU_new[j].reshape(-1,1)
+
+    self.UAU[0] = np.hstack(UAU_new)
+    self.UF[0] = np.conjugate(Uprev.T) @ self.F0
+
+    self.prof.stop('t_project')
+
+    # Project onto residual
+    if self.kickrank > 0:
+      ZU_new = [None] * self.rc[0]
+      for j in range(self.rc[0]):
+        ZU_new[j] = np.conjugate(self.Z0.T) @ self.A0[j] @ Uprev
+        ZU_new[j] = ZU_new[j].reshape(-1,1)
+      
+      self.ZU[0] = np.hstack(ZU_new)
+      # TODO why ZC and not ZF
+      self.ZC[0] = np.conjugate(self.Z0.T) @ self.F0
+
+    return False
 
   def step_forward(self):
     pass
@@ -146,7 +248,7 @@ class als_cross:
     Parameters
     ----------
     params:
-      parameters in TT format.
+      list of parameters in TT format.
     assem_solve_fun: callable
       function implementing FE solver.
     tol: scalar
@@ -167,74 +269,91 @@ class als_cross:
     self.rng = np.random.default_rng()
 
     # grid sizes
-    self.n_param = params.n[1:]   # parametric grid sizes
-    self.d_param = params.d - 1   # parameter dimension
-    self.rc = params.r[1:]        # TT ranks of the parameter
+    self.n_param = self.params[0].n[1:]     # parametric grid sizes
+    self.d_param = self.params[0].d - 1     # parameter dimension
+    self.rc = [p.r[1:] for p in params]     # TT ranks of the parameters
+    self.Mc = len(self.params)    # number of parameter TTs
     self.ru = None                # TT ranks of the solution
     self.rz = None                # TT ranks of the residual
-
-    # parametric cores of the parameter
-    self.c_cores = tt.vector.to_list(self.params)[1:]
+    self.Nx = None
 
     # orthogonalize parameter TT
-    self.c_cores, v, self.rc, indices = \
-      self.orthogonalize_tensor(self.c_cores)
-    
-    # TODO
-    # - init residual stuff
-    # - 
+    self.c_cores = [None] * len(self.params)
+    self.C_core = [None] * len(self.params)
+    for i, param in self.params:
+      # keep maxvol indices of first param TT 
+      if i == 0:
+        self.C_core[i], self.c_cores[i], self.rc[i], indices = \
+          self.orthogonalize_tensor(tt.vector.to_list(param))
+      else:
+        self.C_core[i], self.c_cores[i], self.rc[i] = \
+          self.orthogonalize_tensor(tt.vector.to_list(param), return_indices=False)
 
     # init index set
-    self.Ju = np.empty((1,0), dtype=np.int32) # u indices (for PDE eval)
-    self.UC = [np.ones((1,1))]                # right samples of param at Ju
+    self.Ju = np.empty((1,0), dtype=np.int32)       # u indices (for PDE eval)
+    
     # get random indices
     if self.random_init > 0:
       xi = np.ones((1, self.random_init))
       for i in reversed(range(self.d_param)):
-        ind = self.rng.integers(self.n_param[i], size=(self.random_init))
-        self.Ju = np.hstack(ind, self.Ju)
-        # sample param
-        xi = np.einsum('i...j,j...->i...', self.c_cores[i][:, ind, :], xi)
-        self.UC = [xi] + self.UC
+        indices[i] = self.rng.integers(self.n_param[i], size=(self.random_init))
+        self.Ju = np.hstack(indices[i], self.Ju)
         self.ru[i] = self.random_init
-    # OR use indices derived from param
+
+    # OR use indices derived from (first) param
     else:
-      xi = np.ones((1, self.rc[-2]))
       # TODO original code only to i=1. Why?
       for i in reversed(range(self.d_param)):
-        ind = indices[i] % self.n_param[i]
-        self.Ju = np.hstack(ind, self.Ju)
-        # sample param
-        xi = np.einsum('i...j,j...->i...', self.c_cores[i][:, ind, :], xi)
-        self.UC = [xi] + self.UC
-        # TODO this was original code. Why?
-        # self.UC = [np.eye(self.rc[i])] + self.UC 
-      self.ru = self.rc
+        indices[i] = indices[i] % self.n_param[i]
+        self.Ju = np.hstack(indices[i], self.Ju)
+        self.ru = self.rc[0]
+
+    # Init right samples of param at indices Ju
+    self.UC = [np.ones((1,1)) for p in self.params]
+    for j in range(self.Mc):
+      xi = np.ones((1, self.rc[j][-2]))
+      for i in reversed(range(self.d_param)):
+        xi = np.einsum('i...j,j...->i...', self.c_cores[j][i][:, indices[i], :], xi)
+        self.UC[j] = [xi] + self.UC[j]
 
     # init residual
     if self.kickrank > 0:
       self.ZU = [np.ones((1,1))]  # right samples of sol at residual indices
-      self.ZC = [np.ones((1,1))]  # right samples of param at residual indices
-      # residual ranks are relative to param ranks
-      self.rz = np.round(self.kickrank * self.rc / np.max(self.rc))
+      # residual ranks are relative to (first) param ranks
+      self.rz = np.round(self.kickrank * self.rc[0] / np.max(self.rc[0]))
       self.rz = np.clip(self.rz, min=1).astype(np.int32)
       self.rz[-1] = 1
       xi = np.ones((1, self.rz[-2]))
       for i in reversed(range(self.d_param)):
         # random initial indices
-        ind = self.rng.integers(self.n_param[i], size=(self.rz[i]))
-        xi = np.einsum('i...j,j...->i...', self.c_cores[i][:, ind, :], xi)
-        self.ZC = [xi] + self.ZC
+        indices[i] = self.rng.integers(self.n_param[i], size=(self.rz[i]))
         # no solution yet, intialize with random data
         self.ZU = [self.rng.standard_normal((self.ru[i], self.rz[i]))] + self.ZU
+
+      # right samples of param at residual indices
+      self.ZC = [[np.ones((1,1))] for p in self.params] 
+      for j in range(self.Mc):
+        xi = np.ones((1, self.rc[j][-2]))
+        for i in reversed(range(self.d_param)):
+          xi = np.einsum('i...j,j...->i...', self.c_cores[j][i][:, indices[i], :], xi)
+          self.ZC[j] = [xi] + self.ZC[j]
 
     # init solution variables
     self.U0 = None
     self.u = [None] * self.d
 
+    # init matrix and rhs variables
+    self.A0 = None
+    self.F0 = None
+
+    # init projection variables
+    self.UAU = [None] * (self.n_param + 1)
+    self.UF = [None] * (self.n_param + 1)
+
     # init main loop flags and counters
     self.forward_is_next = True
     self.swp = 1
+    self.max_dx = 0
     
     # init profiler
     self.prof = self.profiler(['t_solve, t_project'], ['n_PDE_eval'])
@@ -245,7 +364,10 @@ class als_cross:
 
       # alternate forward/backward iteration
       if self.forward_is_next:
-        self.spatial_core_forward()
+        tol_reached =  self.spatial_core_forward()
+        if tol_reached:
+          break
+
         for i in range(1, self.d_param+1):
           self.step_forward()
         
