@@ -235,10 +235,7 @@ class als_cross:
 
     return False
 
-  def step_forward(self):
-    pass
-
-  def step_backward(self):
+  def step_backward(self, i):
     pass
 
   def __init__(self, params, assem_solve_fun, tol, **args):
@@ -352,8 +349,10 @@ class als_cross:
 
     # init main loop flags and counters
     self.forward_is_next = True
-    self.swp = 1
-    self.max_dx = 0
+    self.swp = 1                # iteration counter
+    self.max_dx = 0             # tracks max error over all cores
+    self.tol_reached = False    # set if tolerance check passes
+
     
     # init profiler
     self.prof = self.profiler(['t_solve, t_project'], ['n_PDE_eval'])
@@ -369,12 +368,12 @@ class als_cross:
           break
 
         for i in range(1, self.d_param+1):
-          self.step_forward()
+          self.step_forward(i)
         
         self.forward_is_next = False
       else:
         for i in reversed(range(1, self.d_param+1)):
-          self.step_backward()
+          self.step_backward(i)
 
         self.forward_is_next = True
 
