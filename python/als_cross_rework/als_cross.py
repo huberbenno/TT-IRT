@@ -149,7 +149,7 @@ class als_cross:
     if self.swp == 1:
       self.U0, self.A0, self.F0 = self.assem_solve_fun(self.Ju)
       self.Nx = self.U0[0].shape[0]
-      self.F0 = np.hstack(self.F0)
+      self.F0 = [np.hstack(F0k) for F0k in self.F0] 
     else:
       self.U0 = self.assem_solve_fun(self.Ju, linear_system=False)
 
@@ -182,16 +182,17 @@ class als_cross:
     # rank adaption
     if self.kickrank > 0: # TODO and (random_init==0 or swp>1)
       # compute residual at Z indices
-      self.Z0 = np.empty((self.Nx, self.rz[0]))
+      self.Z0 = np.zeros((self.Nx, self.rz[0]))
       cru = self.U0 @ v @ self.ZU[0]
-      for j in range(self.rz[0]):
-        crA = np.zeros((self.Nx, self.Nx))
-        for k in range(self.rc[0]):
-          crA += self.A0[k] * self.ZC[0][k,j]
+      for k in range(self.Mc):
+        for j in range(self.rz[0]):
+          crA = np.zeros((self.Nx, self.Nx))
+          for l in range(self.rc[0]):
+            crA += self.A0[k][l] * self.ZC[0][l,j]
 
-        self.Z0[:,j] = crA @ cru[:,j]
+          self.Z0[:,j] += crA @ cru[:,j]
 
-      self.Z0 -= self.F0 @ self.ZC[0]
+        self.Z0 -= self.F0[k] @ self.ZC[k][0]
 
       # QR residual
       self.Z0 = np.linalg.qr(self.Z0)[0]
@@ -202,7 +203,7 @@ class als_cross:
       # QR enriched core
       self.U0, v = np.linalg.qr(cru)
       if self.swp > 1:
-        self.u[0] = v[:,:self.ru[0]] @ u[0].reshape(self.ru[0], -1)
+        self.u[0] = v[:,:self.ru[0]] @ self.u[0].reshape(self.ru[0], -1)
       
       self.ru[0] = self.U0.shape[1]
     
@@ -210,28 +211,29 @@ class als_cross:
     # Project onto solution basis U0
     self.prof.start('t_project')
    
-    UAU_new = [None] * self.rc[0]
-    Uprev = self.U0
+    UAU_new = [[None] * self.Mc] * self.rc[0]
+    Uprev = self.U0 # TODO technically dont need to copy here
+    for k in range(self.Mc):
+      for j in range(self.rc[0]):
+        UAU_new[k][j] = np.conjugate(Uprev.T) @ self.A0[k][j] @ Uprev
+        UAU_new[k][j] = UAU_new[k][j].reshape(-1,1)
 
-    for j in range(self.rc[0]):
-      UAU_new[j] = np.conjugate(Uprev.T) @ self.A0[j] @ Uprev
-      UAU_new[j] = UAU_new[j].reshape(-1,1)
-
-    self.UAU[0] = np.hstack(UAU_new)
-    self.UF[0] = np.conjugate(Uprev.T) @ self.F0
+    self.UAU[0] = [np.hstack(UAUk) for UAUk in UAU_new]
+    self.UF[0] = [np.conjugate(Uprev.T) @ F0k for F0k in self.F0]
 
     self.prof.stop('t_project')
 
     # Project onto residual
     if self.kickrank > 0:
-      ZU_new = [None] * self.rc[0]
-      for j in range(self.rc[0]):
-        ZU_new[j] = np.conjugate(self.Z0.T) @ self.A0[j] @ Uprev
-        ZU_new[j] = ZU_new[j].reshape(-1,1)
+      ZU_new = [[None] * self.Mc] * self.rc[0]
+      for k in range(self.Mc):
+        for j in range(self.rc[0]):
+          ZU_new[j] = np.conjugate(self.Z0.T) @ self.A0[j] @ Uprev
+          ZU_new[j] = ZU_new[j].reshape(-1,1)
       
-      self.ZU[0] = np.hstack(ZU_new)
+      self.ZU[0] = [np.hstack(ZUk) for ZUk in ZU_new]
       # TODO why ZC and not ZF
-      self.ZC[0] = np.conjugate(self.Z0.T) @ self.F0
+      self.ZC[0] = [np.conjugate(self.Z0.T) @ F0k for F0k in self.F0]
 
     return False
 
