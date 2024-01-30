@@ -159,14 +159,14 @@ class als_cross:
     self.prof.increment('n_PDE_eval')
 
     # check error
-    dx = 1 
+    self.dx = 1 
     if U_prev is not None:
-      dx = np.linalg.norm(self.U0 - U_prev) / np.linalg.norm(self.U0)
+      self.dx = np.linalg.norm(self.U0 - U_prev) / np.linalg.norm(self.U0)
 
-    self.max_dx = max(self.max_dx, dx)
+    self.max_dx = max(self.max_dx, self.dx)
 
     if self.verbose > 0:
-      print(f'=swp={self.swp} core 0, max_dx={self.max_dx:.3e}, max_rank = {max(self.ru)}')
+      print(f'= swp={self.swp} core 0, max_dx={self.max_dx:.3e}, max_rank = {max(self.ru)}')
 
     # exit if tolerance is met
     if self.max_dx < self.tol:
@@ -236,6 +236,43 @@ class als_cross:
       self.ZC[0] = [np.conjugate(self.Z0.T) @ F0k for F0k in self.F0]
 
     return False
+  
+  def solve_reduced_system(self,i):
+    # solve (block diagonal) reduced system
+    # right hand interface projection
+    crC = [None] * self.Mc
+    for k in range(self.Mc):
+      crC[k] = self.c_cores[k][i-1].reshape(-1, self.rc[i]) @ self.UC[k][i]
+
+    # UAUi = self.UAU[i-1]
+    # UFi = self.UF[i-1]
+    crF = [self.UF[i-1][k] @ crC[k] for k in range(self.Mc)]
+
+    # TODO
+    crA = self.UAU[i-1].reshape(-1, self.rc[i-1])
+    cru = np.empty((self.ru[i-1], self.n_param[i-1] * self.ru[i]))
+    for j in range(self.n_param[i-1] * self.ru[i]):
+      Ai = np.matmul(crA, crC[:,j])
+      Ai = np.reshape(Ai, (ru1, ru1))
+      cru[:,j] = np.linalg.solve(Ai, crF[:,j])
+
+    cru = cru.reshape(-1, self.ru[i])
+
+    # check error
+    self.dx = 1 
+    if self.u[i-1] is not None:
+      self.dx = np.linalg.norm(cru.flatten() - self.u[i-1].flatten()) / np.linalg.norm(cru)
+
+    self.max_dx = max(self.max_dx, self.dx) 
+  
+  def step_forward(self, i):
+    # solve (block diagonal) reduced system
+    self.solve_reduced_system(i)
+
+
+
+    if self.verbose > 0:
+      print(f'= swp={self.swp} core {i}, dx={self.dx:.3e}, rank = [{self.ru[i-1]}, {self.ru[i]}]')
 
   def step_backward(self, i):
     pass
@@ -308,7 +345,7 @@ class als_cross:
         self.ru = self.rc[0]
 
     # Init right samples of param at indices Ju
-    self.UC = [np.ones((1,1)) for p in self.params]
+    self.UC = [[np.ones((1,1))] for p in self.params]
     for j in range(self.Mc):
       xi = np.ones((1, self.rc[j][-2]))
       for i in reversed(range(self.d_param)):
@@ -355,7 +392,6 @@ class als_cross:
     self.max_dx = 0             # tracks max error over all cores
     self.tol_reached = False    # set if tolerance check passes
 
-    
     # init profiler
     self.prof = self.profiler(['t_solve, t_project'], ['n_PDE_eval'])
 
@@ -368,7 +404,8 @@ class als_cross:
         tol_reached =  self.spatial_core_forward()
         if tol_reached:
           break
-
+        
+        # TODO dont need to do last core when iterating back
         for i in range(1, self.d_param+1):
           self.step_forward(i)
         
