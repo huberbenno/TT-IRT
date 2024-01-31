@@ -238,25 +238,30 @@ class als_cross:
     return False
   
   def solve_reduced_system(self,i):
-    # solve (block diagonal) reduced system
+    """
+    Solve (block diagonal) reduced systems.
+    """
     # right hand interface projection
     crC = [None] * self.Mc
     for k in range(self.Mc):
       crC[k] = self.c_cores[k][i-1].reshape(-1, self.rc[i]) @ self.UC[k][i]
 
-    # UAUi = self.UAU[i-1]
-    # UFi = self.UF[i-1]
-    crF = [self.UF[i-1][k] @ crC[k] for k in range(self.Mc)]
+    # compute RHS projection
+    crF = np.zeros((self.ru[i-1], self.n_param[i-1] * self.ru[i]))
+    for k in range(self.Mc):
+      crF += self.UF[i-1][k] @ crC[k]
 
-    # TODO
-    crA = self.UAU[i-1].reshape(-1, self.rc[i-1])
+    # assemble and solve blocks
+    # TODO significant speedup (especially for small ranks) available 
+    crA = [UAUk.reshape(-1, self.rc[i-1]) for UAUk in self.UAU[i-1]]
     cru = np.empty((self.ru[i-1], self.n_param[i-1] * self.ru[i]))
     for j in range(self.n_param[i-1] * self.ru[i]):
-      Ai = np.matmul(crA, crC[:,j])
-      Ai = np.reshape(Ai, (ru1, ru1))
-      cru[:,j] = np.linalg.solve(Ai, crF[:,j])
+      Ai = np.zeros(self.ru[i-1] * self.ru[i-1])
+      for k in range(self.Mc):
+        Ai += np.matmul(crA[k], crC[k][:,j])
 
-    cru = cru.reshape(-1, self.ru[i])
+      Ai = np.reshape(Ai, (self.ru[i-1], self.ru[i-1]))
+      cru[:,j] = np.linalg.solve(Ai, crF[:,j])
 
     # check error
     self.dx = 1 
@@ -264,11 +269,109 @@ class als_cross:
       self.dx = np.linalg.norm(cru.flatten() - self.u[i-1].flatten()) / np.linalg.norm(cru)
 
     self.max_dx = max(self.max_dx, self.dx) 
+
+    # update solution
+    self.u[i-1] = cru.reshape((self.ru[i-1], self.n_param[i-1],  self.ru[i]))
+
+  def project_blockdiag(self, i):
+    """
+    Update right interface projections.
+    """
+    UAU_new = np.zeros((self.ru[i], self.ru[i] * self.rc[i]))
+
+    UAU = self.UAU[i-1].reshape(self.ru[i-1], -1)
+    crC = np.transpose(self.c_cores[i-1], (0,2,1))
+    cru = np.transpose(self.u[i-1], (0,2,1))
+    for j in range(self.n_param[i-1]):
+      v = np.conjugate(cru[:,:,j].T)
+      crA = v @ UAU
+      crA = crA.reshape(-1, self.rc[i-1]) @ crC[:,:,j]
+      crA = crA.reshape(self.ru[i], -1).T.reshape(self.ru[i-1], -1)
+      crA = v @ crA
+      UAU_new += crA.reshape(-1, self.ru[i]).T
+
+    return UAU_new
   
   def step_forward(self, i):
     # solve (block diagonal) reduced system
     self.solve_reduced_system(i)
 
+    # truncate solution core
+    cru, rv = localcross(self.u[i-1].reshape(-1, self.ru[i]))
+
+    # Rank adaption
+    if self.kickrank > 0: # and (random_init==0 or swp>1)
+      # right interface at Z indices
+      crC = self.c_cores[i-1].reshape(-1, self.rc[i]) @ self.ZC[i]
+      crC = crC.reshape(self.rc[i-1], -1)
+      # solution interface at U indices
+      U_prev = (cru @ rv @ self.ZU[i]).reshape(self.ru[i-1], -1)
+      # compute residual
+      crA = self.UAU[i-1].reshape(-1, self.rc[i-1])
+      crz = np.empty(((self.ru[i-1], self.n_param[i-1] * self.rz[i])))
+      for j in range(self.n_param[i-1] * self.rz[i]):
+        Ai = (crA @ crC[:,j]).reshape(-1, self.ru[i-1])
+        crz[:,j] = Ai @ U_prev[:,j]
+
+      crz -= self.UF[i-1] @ crC
+      # enrich by combining solution and residual
+      cru = np.hstack((cru, crz.reshape(-1, self.rz[i])))
+      # QR enriched core
+      cru, v = np.linalg.qr(cru)
+      rv = v[:, :rv.shape[0]] @ rv
+
+      # Update residual 
+      crA = self.ZU[i-1].reshape(-1, self.rc[i-1])
+      crz = np.empty((self.rz[i-1], self.n_param[i-1] * self.rz[i]))
+      for j in range(self.n_param[i-1] * self.rz[i]):
+        Ai = (crA @ crC[:,j]).reshape(self.rz[i-1], self.ru[i-1])
+        crz[:,j] = Ai @ U_prev[:,j]
+
+      crz -= self.ZC[i-1] @ crC
+      crz = crz.reshape(-1, self.rz[i])
+
+    # cast non orthogonal factor to the next block
+    if self.swp > 1:
+      self.u[i] = (rv @ self.u[i].reshape(self.ru[i], -1))
+      self.u[i].reshape((self.ru[i], self.n_param[i], self.ru[i+1]))
+
+    # update solution core
+    self.ru[i] = cru.shape[1]
+    self.u[i-1] = cru.reshape((self.ru[i-1], self.n_param[i-1], self.ru[i]))
+
+    # update left interface projections
+    self.UAU[i] = self.project_blockdiag(i)
+
+    # update RHS projection interfaces
+    UFi = self.UF[i-1] @ self.c_cores[i-1].reshape(self.rc[i-1], -1)
+    self.UF[i] = np.conjugate(cru.T) @ UFi.reshape(-1, self.rc[i])
+
+    # Projections with the residual
+    if self.kickrank > 0:
+      # TODO
+      # if random_init>0 and swp==1:
+      #       crz = rng.standard_normal((rz[i-1] * ny[i-1], rz[i]))
+      # orthogonalize residual core
+      crz = np.linalg.qr(crz)[0]
+      self.rz[i] = crz.shape[1]
+      crz = crz.reshape((self.rz[i-1], self.n_param[i-1], self.rz[i]))
+      
+      # matrix
+      # TODO verify just changing the slicing works
+      # crC = np.transpose(self.c_cores[i-1], (0,2,1))
+      # cru = np.transpose(self.u[i-1], (0,2,1))
+      # crz = np.transpose(crz, (0,2,1))
+      self.ZU[i] = np.zeros(self.rz[i], self.ru[i] * self.rc[i])
+      for j in range(self.n_param[i-1]):
+        crA = np.conjugate(crz[:,j,:].T) @ self.ZU[i-1].reshape(self.rz[i-1], -1)
+        crA = crA.reshape(-1, self.rc[i-1]) @ self.c_cores[i-1][:,j,:]
+        crA = crA.reshape(self.rz[i], -1).T.reshape(self.ru[i-1])
+        crA = np.conjugate(self.u[i-1][:,j,:].T) @ crA
+        self.ZU[i] += crA.reshape(-1, self.rz[i]).T 
+
+      # RHS
+      self.ZC[i] = self.ZC[i-1] @ self.c_cores[i-1].reshape(self.rc[i-1], -1)
+      self.ZC[i] = np.conjugate(crz.T) @ self.ZC[i].reshape(-1, self.rc[i])
 
 
     if self.verbose > 0:
