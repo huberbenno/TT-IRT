@@ -156,7 +156,10 @@ class als_cross:
     if self.use_indices:
       arg = self.Ju
     else:
-      arg = 
+      # construct coeff
+      arg = [None] * self.Mc
+      for k in range(self.Mc):
+        arg[k] = self.C_core[k].reshape(-1, self.rc[k][0]) @ self.UC[k][0] 
 
     # get matrix and rhs in first iteration
     if self.swp == 1:
