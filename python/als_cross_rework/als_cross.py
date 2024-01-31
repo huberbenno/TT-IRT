@@ -297,7 +297,10 @@ class als_cross:
     self.solve_reduced_system(i)
 
     # truncate solution core
-    cru, rv = localcross(self.u[i-1].reshape(-1, self.ru[i]))
+    cru, rv = localcross(
+      self.u[i-1].reshape(-1, self.ru[i]), 
+      self.tol/np.sqrt(self.d_param)
+      )
 
     # Rank adaption
     if self.kickrank > 0: # and (random_init==0 or swp>1)
@@ -375,10 +378,90 @@ class als_cross:
 
 
     if self.verbose > 0:
-      print(f'= swp={self.swp} core {i}, dx={self.dx:.3e}, rank = [{self.ru[i-1]}, {self.ru[i]}]')
+      print(f'= swp={self.swp} core {i}>, dx={self.dx:.3e}, rank = [{self.ru[i-1]}, {self.ru[i]}]')
+
 
   def step_backward(self, i):
-    pass
+    # solve (block diagonal) reduced system
+    self.solve_reduced_system(i)
+
+    # truncate solution core (note cru is not orthogonal)
+    rv, cru = localcross(
+      self.u[i-1].reshape(-1, self.ru[i]), 
+      self.tol/np.sqrt(self.d_param)
+      )
+
+    # rank adaption
+    if self.kickrank > 0:
+      # enrichment
+      crC = self.c_cores[i-1].reshape(-1, self.rc[i]) @ self.UC[i]
+      crC = crC.reshape(self.rc[i-1], -1)
+      U_prev = (rv @ cru).reshape(self.ru[i-1], -1)
+      crA = self.ZU[i-1].reshape(-1, self.rc[i-1])
+      crz = np.empty((self.rz[i-1], self.n_param[i-1] * self.ru[i]))
+      for j in range(self.n_param[i-1] * self.ru[i]):
+        Ai = (crA @ crC[:,j]).reshape(-1, self.ru[i-1])
+        crz[:,j] = Ai @ U_prev[:,j]
+
+      crz -= self.ZC[i-1] @ crC
+      cru = np.vstack((cru, crz))
+
+      # Residual
+      crC = self.c_cores[i-1].reshape(-1, self.rc[i]) @ self.ZC[i]
+      crC = crC.reshape(self.rc[i-1], -1)
+      U_prev = U_prev.reshape(-1, self.ru[i]) @ self.ZU[i]
+      U_prev = U_prev.reshape(self.ru[i-1], 1)
+      crz = np.empty((self.rz[i-1], self.n_param[i-1] * self.rz[i]))
+      for j in range(self.n_param[i-1] * self.rz[i]):
+        Ai = (crA @ crC[:,j]).reshape(-1, self.ru[i-1])
+        crz[:,j] = Ai @ U_prev[:,j]
+
+      crz -= self.ZC[i-1] @ crC
+      crz = crz.reshape(-1, self.rz[i])
+
+    # QR solution core
+    # TODO why qr again if kickrank==0
+    cru, v = np.linalg.qr(cru.T)
+    rv = rv @ v.T[:rv.shape[1]]
+    self.ru[i-1] = rv.shape[1]
+
+    # maxvol to find local indices
+    ind = tt.maxvol.maxvol(cru)
+    cru = np.linalg.solve(cru[ind].T, cru.T)
+
+    # cast non orthogonal factor to next core
+    if i > 1:
+      self.u[i-2] = self.u[i-2].reshape(-1, rv.shape[0]) @ rv
+      self.u[i-2].reshape((self.ru[i-2], self.n_param[i-2], self.ru[i-1]))
+    else:
+      self.U0 = self.U0 @ rv
+    
+    # update solution core
+    self.u[i-1] = cru.reshape((self.ru[i-1], self.n_param[i-1], self.ru[i]))
+
+    # update indices
+    ind = ind % self.n_param[i-1]
+    self.Ju = np.hstack(ind, self.Ju)
+
+    # right interface projection (sample param on U indices)
+    self.UC[i-1] = self.c_cores[i-1].reshape(-1, self.rc[i]) @ self.UC[i]
+    self.UC[i-1] = self.UC[i-1].reshape(self.rc[i-1])[:, ind]
+
+    if self.kickrank > 0:
+      # QR and maxvol residual core
+      crz = np.linalg.qr(crz.reshape(self.rz[i-1]).T)[0]
+      self.rz[i-1] = crz.shape[1]
+      ind = tt.maxvol.maxvol(crz)
+      # sample C at Z indices
+      self.ZC[i-1] = self.cores[i-1].reshape(-1, self.rc[i]) @ self.ZC[i]
+      self.ZC[i-1] = self.ZC[i-1].reshape(self.rc[i-1], -1)[:, ind]
+      # sample U at Z indices
+      self.ZU[i-1] = self.u[i-1].reshape(-1, self.ru[i]) @ self.ZU[i]
+      self.ZU[i-1] = self.ZU[i-1].reshape(self.ru[i-1], -1)[:, ind]
+
+    if self.verbose > 0:
+      print(f'= swp={self.swp} core <{i}, dx={self.dx:.3e}, rank = [{self.ru[i-1]}, {self.ru[i]}]')
+
 
   def __init__(self, params, assem_solve_fun, tol, **args):
     """
