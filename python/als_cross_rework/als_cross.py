@@ -329,7 +329,7 @@ class als_cross:
       # Update residual
       crz = np.zeros((self.rz[i-1], self.n_param[i-1] * self.rz[i]))
       for k in range(self.Mc):
-        crA = self.ZU[i-1].reshape(-1, self.rc[k][i-1])
+        crA = self.ZU[i-1][k].reshape(-1, self.rc[k][i-1])
         for j in range(self.n_param[i-1] * self.rz[i]):
           Ai = (crA @ crC[:,j]).reshape(self.rz[i-1], self.ru[i-1])
           crz[:,j] += Ai @ U_prev[:,j]
@@ -456,20 +456,21 @@ class als_cross:
 
     # right interface projection (sample param on U indices)
     for k in range(self.Mc):
-      self.UC[i-1] = self.c_cores[i-1].reshape(-1, self.rc[i]) @ self.UC[i]
-      self.UC[i-1] = self.UC[i-1].reshape(self.rc[i-1])[:, ind]
+      self.UC[i-1][k] = self.c_cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.UC[i][k]
+      self.UC[i-1][k] = self.UC[i-1][k].reshape(self.rc[k][i-1], -1)[:, ind]
 
     if self.kickrank > 0:
       # QR and maxvol residual core
       crz = np.linalg.qr(crz.reshape(self.rz[i-1]).T)[0]
       self.rz[i-1] = crz.shape[1]
       ind = tt.maxvol.maxvol(crz)
-      # sample C at Z indices
-      self.ZC[i-1] = self.cores[i-1].reshape(-1, self.rc[i]) @ self.ZC[i]
-      self.ZC[i-1] = self.ZC[i-1].reshape(self.rc[i-1], -1)[:, ind]
-      # sample U at Z indices
-      self.ZU[i-1] = self.u[i-1].reshape(-1, self.ru[i]) @ self.ZU[i]
-      self.ZU[i-1] = self.ZU[i-1].reshape(self.ru[i-1], -1)[:, ind]
+      for k in range(self.Mc):
+        # sample C at Z indices
+        self.ZC[i-1][k] = self.cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.ZC[i][k]
+        self.ZC[i-1][k] = self.ZC[i-1][k].reshape(self.rc[k][i-1], -1)[:, ind]
+        # sample U at Z indices
+        self.ZU[i-1][k] = self.u[i-1].reshape(-1, self.ru[i]) @ self.ZU[i][k]
+        self.ZU[i-1][k] = self.ZU[i-1][k].reshape(self.ru[i-1], -1)[:, ind]
 
     if self.verbose > 0:
       print(f'= swp={self.swp} core <{i}, dx={self.dx:.3e}, rank = [{self.ru[i-1]}, {self.ru[i]}]')
