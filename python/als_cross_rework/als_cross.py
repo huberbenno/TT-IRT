@@ -144,9 +144,9 @@ class als_cross:
     C0.reshape(M,N,r[0])
 
     if return_indices:
-      return C0, cores, r, indices
+      return C0, cores[1:], r, indices
     else:
-      return C0, cores, r
+      return C0, cores[1:], r
   
   def spatial_core_forward(self):
     # store previous U
@@ -542,6 +542,9 @@ class als_cross:
       else:
         self.C_core[k], self.c_cores[k], self.rc[k] = \
           self.orthogonalize_tensor(tt.vector.to_list(param), return_indices=False)
+    
+    ind_rem = [None] * self.d_param
+    ind_quot = [None] * self.d_param      
 
     # init index set    
     # EITHER get random indices
@@ -550,7 +553,13 @@ class als_cross:
       xi = np.ones((1, self.random_init))
       # TODO original code only to i=1. Why?
       for i in reversed(range(self.d_param)):
-        indices[i] = self.rng.integers(self.n_param[i], size=(self.random_init))
+        indices = self.rng.choice(
+          self.n_param[i]*self.rc[0][i+1], 
+          size=(self.random_init),
+          replace=False, shuffle=False
+          )
+        ind_quot[i], ind_rem[i] = np.divmod(indices, self.rc[0][i+1])
+        self.rng.integers(self.n_param[i], size=(self.random_init))
         self.Ju = np.hstack([indices[i], self.Ju])
         self.ru[i] = self.random_init
 
@@ -558,17 +567,19 @@ class als_cross:
     else:
       self.Ju = np.empty((self.rc[0][-2],0), dtype=np.int32) 
       for i in reversed(range(self.d_param)):
-        indices[i], rem = np.divmod(indices[i], self.rc[0][i+1])
-        self.Ju = np.hstack([indices[i].reshape(-1,1), self.Ju[rem]])
-        self.ru = self.rc[0]
+        ind_quot[i], ind_rem[i] = np.divmod(indices[i], self.rc[0][i+1])
+        self.Ju = np.hstack([ind_quot[i].reshape(-1,1), self.Ju[ind_rem[i]]])
+
+      self.ru = self.rc[0]
 
     # Init right samples of param at indices Ju
     self.UC = [[np.ones((1,1))] for p in self.params]
     for k in range(self.Mc):
       xi = np.ones((1, self.rc[k][-2]))
-      for i in reversed(range(self.d_param)):
-        print(k, i)
-        xi = np.einsum('i...j,j...->i...', self.c_cores[k][i][:, indices[i], :], xi)
+      for i in reversed(range(self.d_param)):    
+        xi = np.einsum('i...j,j...->i...', 
+                       self.c_cores[k][i][:, ind_quot[i], :], 
+                       xi[:, ind_rem[i]])
         self.UC[k] = [xi] + self.UC[k]
 
     # init residual
@@ -576,26 +587,33 @@ class als_cross:
       self.ZU = [np.ones((1,1))]  # right samples of sol at residual indices
       # residual ranks are relative to (first) param ranks
       self.rz = np.round(self.kickrank * self.rc[0] / np.max(self.rc[0]))
-      self.rz = np.clip(self.rz, min=1).astype(np.int32)
+      self.rz = np.clip(self.rz, a_min=1, a_max=None).astype(np.int32)
       self.rz[-1] = 1
       xi = np.ones((1, self.rz[-2]))
       for i in reversed(range(self.d_param)):
         # random initial indices
-        indices[i] = self.rng.integers(self.n_param[i], size=(self.rz[i]))
+        indices = self.rng.choice(
+          self.n_param[i]*self.rz[i+1], 
+          size=(self.rz[i]),
+          replace=False, shuffle=False
+          )
+        ind_quot[i], ind_rem[i] = np.divmod(indices, self.rz[i+1])
         # no solution yet, intialize with random data
         self.ZU = [self.rng.standard_normal((self.ru[i], self.rz[i]))] + self.ZU
 
       # right samples of param at residual indices
       self.ZC = [[np.ones((1,1))] for p in self.params] 
       for k in range(self.Mc):
-        xi = np.ones((1, self.rc[k][-2]))
+        xi = np.ones((1, self.rz[-2]))
         for i in reversed(range(self.d_param)):
-          xi = np.einsum('i...j,j...->i...', self.c_cores[k][i][:, indices[i], :], xi)
+          xi = np.einsum('i...j,j...->i...', 
+                         self.c_cores[k][i][:, ind_quot[i], :], 
+                         xi[:, ind_rem[i]])
           self.ZC[k] = [xi] + self.ZC[k]
 
     # init solution variables
     self.U0 = None
-    self.u = [None] * self.d
+    self.u = [None] * self.d_param
 
     # init matrix and rhs variables
     self.A0 = None
