@@ -87,7 +87,8 @@ class als_cross:
           warnings.warn('unknown argument \'' + arg + '\'', SyntaxWarning)
   
 
-  def orthogonalize_tensor(C0, cores, return_indices=True):
+  def orthogonalize_tensor(self, cores, return_indices=True):
+    # TODO dont need self
     """
     Orthogonalize TT tensor.
 
@@ -124,7 +125,7 @@ class als_cross:
       cr = cr.reshape((r[i-1], -1)).T
       cr, v = np.linalg.qr(cr)
       # update rank (in case core has rank deficiency)
-      r[i] = cr.shape[1]
+      r[i-1] = cr.shape[1]
       # compute cross approximation
       ind = tt.maxvol.maxvol(cr)
       if return_indices:
@@ -137,6 +138,7 @@ class als_cross:
       # update core
       cores[i] = cr.reshape((r[i-1],n,r[i]))
     
+    C0 = cores[0]
     M, N, R = C0.shape
     C0 = C0.reshape(-1, R) @ v
     C0.reshape(M,N,r[0])
@@ -469,7 +471,7 @@ class als_cross:
 
     # update indices
     ind = ind % self.n_param[i-1]
-    self.Ju = np.hstack(ind, self.Ju)
+    self.Ju = np.hstack(ind.reshape(-1,1), self.Ju)
 
     # right interface projection (sample param on U indices)
     for k in range(self.Mc):
@@ -532,32 +534,32 @@ class als_cross:
     # orthogonalize parameter TT
     self.c_cores = [None] * len(self.params)
     self.C_core = [None] * len(self.params)
-    for k, param in self.params:
+    for k, param in enumerate(self.params):
       # keep maxvol indices of first param TT 
-      if i == 0:
+      if k == 0:
         self.C_core[k], self.c_cores[k], self.rc[k], indices = \
           self.orthogonalize_tensor(tt.vector.to_list(param))
       else:
         self.C_core[k], self.c_cores[k], self.rc[k] = \
           self.orthogonalize_tensor(tt.vector.to_list(param), return_indices=False)
 
-    # init index set
-    self.Ju = np.empty((1,0), dtype=np.int32)       # u indices (for PDE eval)
-    
-    # get random indices
+    # init index set    
+    # EITHER get random indices
     if self.random_init > 0:
+      self.Ju = np.empty((self.random_init,0), dtype=np.int32)
       xi = np.ones((1, self.random_init))
+      # TODO original code only to i=1. Why?
       for i in reversed(range(self.d_param)):
         indices[i] = self.rng.integers(self.n_param[i], size=(self.random_init))
-        self.Ju = np.hstack(indices[i], self.Ju)
+        self.Ju = np.hstack([indices[i], self.Ju])
         self.ru[i] = self.random_init
 
     # OR use indices derived from (first) param
     else:
-      # TODO original code only to i=1. Why?
+      self.Ju = np.empty((self.rc[0][-2],0), dtype=np.int32) 
       for i in reversed(range(self.d_param)):
-        indices[i] = indices[i] % self.n_param[i]
-        self.Ju = np.hstack(indices[i], self.Ju)
+        indices[i], rem = np.divmod(indices[i], self.rc[0][i+1])
+        self.Ju = np.hstack([indices[i].reshape(-1,1), self.Ju[rem]])
         self.ru = self.rc[0]
 
     # Init right samples of param at indices Ju
@@ -565,6 +567,7 @@ class als_cross:
     for k in range(self.Mc):
       xi = np.ones((1, self.rc[k][-2]))
       for i in reversed(range(self.d_param)):
+        print(k, i)
         xi = np.einsum('i...j,j...->i...', self.c_cores[k][i][:, indices[i], :], xi)
         self.UC[k] = [xi] + self.UC[k]
 
