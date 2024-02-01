@@ -141,7 +141,7 @@ class als_cross:
     C0 = cores[0]
     M, N, R = C0.shape
     C0 = C0.reshape(-1, R) @ v
-    C0.reshape(M,N,r[0])
+    C0 = C0.reshape(M,N,r[0])
 
     if return_indices:
       return C0, cores[1:], r, indices
@@ -161,7 +161,7 @@ class als_cross:
       # construct coeff
       arg = [None] * self.Mc
       for k in range(self.Mc):
-        arg[k] = self.C_core[k].reshape(-1, self.rc[k][0]) @ self.UC[k][0] 
+        arg[k] = self.C_core[k] @ self.UC[k][0] 
 
     # get matrix and rhs in first iteration
     if self.swp == 1:
@@ -526,7 +526,8 @@ class als_cross:
     self.n_param = self.params[0].n[1:]     # parametric grid sizes
     self.d_param = self.params[0].d - 1     # parameter dimension
     self.rc = [p.r[1:] for p in params]     # TT ranks of the parameters
-    self.Mc = len(self.params)    # number of parameter TTs
+    self.Mc = len(self.params)              # number of parameter TTs
+    self.Rc = [p.r[0] for p in params]      # components per param TT
     self.ru = None                # TT ranks of the solution
     self.rz = None                # TT ranks of the residual
     self.Nx = None
@@ -630,7 +631,7 @@ class als_cross:
     self.tol_reached = False    # set if tolerance check passes
 
     # init profiler
-    self.prof = self.profiler(['t_solve, t_project'], ['n_PDE_eval'])
+    self.prof = self.profiler(['t_solve', 't_project'], ['n_PDE_eval'])
 
   def iterate(self, nswp=1):
     for k in range(nswp):
