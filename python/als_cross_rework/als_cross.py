@@ -148,7 +148,7 @@ class als_cross:
     else:
       return C0, cores[1:], r
   
-  def spatial_core_forward(self):
+  def special_core(self):
     # store previous U
     U_prev = self.U0
 
@@ -174,7 +174,7 @@ class als_cross:
     self.U0 = np.hstack(self.U0)
 
     self.prof.stop('t_solve')
-    self.prof.increment('n_PDE_eval')
+    self.prof.increment('n_PDE_eval', self.ru[0])
 
     # check error
     self.dx = 1 
@@ -189,9 +189,12 @@ class als_cross:
     # exit if tolerance is met
     if self.max_dx < self.tol:
       return True
+    
+    # reset
+    self.max_dx = 0
 
     # truncate U0
-    self.U0, v = localcross(self.U0, self.tol/np.sqrt(self.n_param))
+    self.U0, v = localcross(self.U0, self.tol/np.sqrt(self.d_param))
     self.ru[0] = self.U0.shape[1]
     # cast non-orth factor to next core
     if self.swp > 1:
@@ -201,11 +204,11 @@ class als_cross:
     if self.kickrank > 0: # TODO and (random_init==0 or swp>1)
       # compute residual at Z indices
       self.Z0 = np.zeros((self.Nx, self.rz[0]))
-      for k in range(self.Mc):
-        cru = self.U0 @ v @ self.ZU[k][0]
+      cru = self.U0 @ v @ self.ZU[0]
+      for k in range(self.Mc):  
         for j in range(self.rz[0]):
           crA = np.zeros((self.Nx, self.Nx))
-          for l in range(self.rc[0]):
+          for l in range(self.rc[k][0]):
             crA += self.A0[k][l] * self.ZC[k][0][l,j]
 
           self.Z0[:,j] += crA @ cru[:,j]
@@ -229,15 +232,21 @@ class als_cross:
     # Project onto solution basis U0
     self.prof.start('t_project')
    
-    UAU_new = [[None] * self.Mc] * self.rc[0]
     Uprev = self.U0 # TODO technically dont need to copy here
+    
     for k in range(self.Mc):
-      for j in range(self.rc[0]):
-        UAU_new[k][j] = np.conjugate(Uprev.T) @ self.A0[k][j] @ Uprev
-        UAU_new[k][j] = UAU_new[k][j].reshape(-1,1)
+      UAUk_new = [None] * self.rc[k][0]
+      for j in range(self.rc[k][0]):
+        
+        UAUk_new[j] = np.conjugate(Uprev.T) @ self.A0[k][j] @ Uprev
+        UAUk_new[j] = UAUk_new[j].reshape(-1,1)
+        # print(Uprev.round(2))
+        # print(k, j, self.A0[k][j].round(2))
 
-    self.UAU[0] = [np.hstack(UAUk) for UAUk in UAU_new]
-    self.UF[0] = [np.conjugate(Uprev.T) @ F0k for F0k in self.F0]
+      self.UAU[k][0] = np.hstack(UAUk_new)
+      self.UF[k][0] = (np.conjugate(Uprev.T) @ self.F0[k])
+      # TODO correctness ?
+      self.UF[k][0] = self.UF[k][0][:, :self.rc[k][0]]
 
     self.prof.stop('t_project')
 
@@ -262,21 +271,21 @@ class als_cross:
     # right hand interface projection
     crC = [None] * self.Mc
     for k in range(self.Mc):
-      crC[k] = self.c_cores[k][i-1].reshape(-1, self.rc[i]) @ self.UC[k][i]
+      crC[k] = self.c_cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.UC[k][i]
+      crC[k] = crC[k].reshape(self.rc[k][i-1], -1)
 
     # compute RHS projection
     crF = np.zeros((self.ru[i-1], self.n_param[i-1] * self.ru[i]))
     for k in range(self.Mc):
-      crF += self.UF[i-1][k] @ crC[k]
+      crF += self.UF[k][i-1] @ crC[k]
 
     # assemble and solve blocks
     # TODO significant speedup (especially for small ranks) available 
-    crA = [UAUk.reshape(-1, self.rc[i-1]) for UAUk in self.UAU[i-1]]
     cru = np.empty((self.ru[i-1], self.n_param[i-1] * self.ru[i]))
     for j in range(self.n_param[i-1] * self.ru[i]):
       Ai = np.zeros(self.ru[i-1] * self.ru[i-1])
       for k in range(self.Mc):
-        Ai += np.matmul(crA[k], crC[k][:,j])
+        Ai += self.UAU[k][i-1].reshape(-1, self.rc[k][i-1]) @ crC[k][:,j]
 
       Ai = np.reshape(Ai, (self.ru[i-1], self.ru[i-1]))
       cru[:,j] = np.linalg.solve(Ai, crF[:,j])
@@ -297,8 +306,8 @@ class als_cross:
     """
     UAU_new = np.zeros((self.ru[i], self.ru[i] * self.rc[k][i]))
 
-    UAU = self.UAU[i-1][k].reshape(self.ru[i-1], -1)
-    crC = np.transpose(self.c_cores[i-1][k], (0,2,1))
+    UAU = self.UAU[k][i-1].reshape(self.ru[i-1], -1)
+    crC = np.transpose(self.c_cores[k][i-1], (0,2,1))
     cru = np.transpose(self.u[i-1], (0,2,1))
     for j in range(self.n_param[i-1]):
       v = np.conjugate(cru[:,:,j].T)
@@ -311,9 +320,6 @@ class als_cross:
     return UAU_new
   
   def step_forward(self, i):
-    # solve (block diagonal) reduced system
-    self.solve_reduced_system(i)
-
     # truncate solution core
     cru, rv = localcross(
       self.u[i-1].reshape(-1, self.ru[i]), 
@@ -367,12 +373,13 @@ class als_cross:
     self.u[i-1] = cru.reshape((self.ru[i-1], self.n_param[i-1], self.ru[i]))
 
     # update left interface projections
-    self.UAU[i] = [self.project_blockdiag(i,k) for k in range(self.Mc)]
+    for k in range(self.Mc):
+      self.UAU[k][i] = self.project_blockdiag(i,k)
 
     # update RHS projection interfaces
     for k in range(self.Mc):
-      UFik = self.UF[i-1][k] @ self.c_cores[k][i-1].reshape(self.rc[k][i-1], -1)
-      self.UF[i][k] = np.conjugate(cru.T) @ UFik.reshape(-1, self.rc[k][i])
+      UFik = self.UF[k][i-1] @ self.c_cores[k][i-1].reshape(self.rc[k][i-1], -1)
+      self.UF[k][i] = np.conjugate(cru.T) @ UFik.reshape(-1, self.rc[k][i])
 
     # Projections with the residual
     if self.kickrank > 0:
@@ -408,12 +415,9 @@ class als_cross:
 
 
   def step_backward(self, i):
-    # solve (block diagonal) reduced system
-    self.solve_reduced_system(i)
-
     # truncate solution core (note cru is not orthogonal)
     rv, cru = localcross(
-      self.u[i-1].reshape(-1, self.ru[i]), 
+      self.u[i-1].reshape(self.ru[i-1], -1), 
       self.tol/np.sqrt(self.d_param)
       )
 
@@ -453,16 +457,18 @@ class als_cross:
     # TODO why qr again if kickrank==0
     cru, v = np.linalg.qr(cru.T)
     rv = rv @ v.T[:rv.shape[1]]
-    self.ru[i-1] = rv.shape[1]
-
+    
     # maxvol to find local indices
     ind = tt.maxvol.maxvol(cru)
-    cru = np.linalg.solve(cru[ind].T, cru.T)
+    UU = cru[ind].T
+    cru = np.linalg.solve(UU, cru.T)
+    rv = rv @ UU
+    self.ru[i-1] = rv.shape[1]
 
     # cast non orthogonal factor to next core
     if i > 1:
       self.u[i-2] = self.u[i-2].reshape(-1, rv.shape[0]) @ rv
-      self.u[i-2].reshape((self.ru[i-2], self.n_param[i-2], self.ru[i-1]))
+      self.u[i-2] = self.u[i-2].reshape((self.ru[i-2], self.n_param[i-2], self.ru[i-1]))
     else:
       self.U0 = self.U0 @ rv
     
@@ -470,13 +476,13 @@ class als_cross:
     self.u[i-1] = cru.reshape((self.ru[i-1], self.n_param[i-1], self.ru[i]))
 
     # update indices
-    ind = ind % self.n_param[i-1]
-    self.Ju = np.hstack(ind.reshape(-1,1), self.Ju)
+    ind_quot, ind_rem = np.divmod(ind, self.ru[i])
+    self.Ju = np.hstack([ind_quot.reshape(-1,1), self.Ju[ind_rem]])
 
     # right interface projection (sample param on U indices)
     for k in range(self.Mc):
-      self.UC[i-1][k] = self.c_cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.UC[i][k]
-      self.UC[i-1][k] = self.UC[i-1][k].reshape(self.rc[k][i-1], -1)[:, ind]
+      self.UC[k][i-1] = self.c_cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.UC[k][i]
+      self.UC[k][i-1] = self.UC[k][i-1].reshape(self.rc[k][i-1], -1)[:, ind]
 
     if self.kickrank > 0:
       # QR and maxvol residual core
@@ -621,8 +627,8 @@ class als_cross:
     self.F0 = None
 
     # init projection variables
-    self.UAU = [None] * (self.d_param + 1)
-    self.UF = [None] * (self.d_param + 1)
+    self.UAU = [[None] * (self.d_param + 1) for k in range(self.Mc)]
+    self.UF = [[None] * (self.d_param + 1) for k in range(self.Mc)]
 
     # init main loop flags and counters
     self.forward_is_next = True
@@ -635,25 +641,39 @@ class als_cross:
 
   def iterate(self, nswp=1):
     for k in range(nswp):
-      self.swp += 1
-
       # alternate forward/backward iteration
       if self.forward_is_next:
-        tol_reached =  self.spatial_core_forward()
+        tol_reached =  self.special_core()
         if tol_reached:
           break
         
         # TODO dont need to do last core when iterating back
         for i in range(1, self.d_param+1):
-          self.step_forward(i)
+          # solve (block diagonal) reduced system
+          self.solve_reduced_system(i)
+          # compute projections, rank adaption and more
+          if i < self.d_param:
+            self.step_forward(i)
+
+        if self.verbose > 0:
+          print(f'= swp={self.swp} fwd finish, max_dx={self.max_dx:.3e}, max_rank = {max(self.ru)}')
         
+        # reset
+        self.max_dx = 0
+
         self.forward_is_next = False
+
       else:
         for i in reversed(range(1, self.d_param+1)):
+          # solve (block diagonal) reduced system
+          self.solve_reduced_system(i)
+          # compute projections, rank adaption and more
           self.step_backward(i)
 
         self.Ju = np.empty((1, 0), dtype=np.int32)
         self.forward_is_next = True
+
+      self.swp += 1
 
   def get_tensor(self):
     """
@@ -664,7 +684,7 @@ class als_cross:
     output: tt.tensor
     """
     return tt.tensor.from_list(
-      [self.U0.reshape((1, self.Nxu, self.ru[0]))] + self.u
+      [self.U0.reshape((1, self.Nx, self.ru[0]))] + self.u
       )  
   
   def get_stats(self):
