@@ -32,7 +32,7 @@ class als_cross:
       self.counters = {}
       for counter in counters:
         self.counters[counter] = 0
-    
+
     def start(self, timer):
       self.t_start[timer] = perf_counter()
 
@@ -65,7 +65,7 @@ class als_cross:
     """
     # default values for optional parameters
     self.nswp = 5
-    self.kickrank = 10 
+    self.kickrank = 10
     self.random_init = 0
     self.verbose = 1
     self.use_indices = False
@@ -85,7 +85,7 @@ class als_cross:
           self.verbose = val
         case _:
           warnings.warn('unknown argument \'' + arg + '\'', SyntaxWarning)
-  
+
 
   def orthogonalize_tensor(self, cores, return_indices=True):
     # TODO dont need self
@@ -130,14 +130,14 @@ class als_cross:
       ind = tt.maxvol.maxvol(cr)
       if return_indices:
         indices = [ind] + indices
-      
+
       cr = cr.T
       CC = cr[:, ind]
       cr = np.linalg.solve(CC, cr)
       v = v.T @ CC
       # update core
       cores[i] = cr.reshape((r[i-1],n,r[i]))
-    
+
     C0 = cores[0]
     M, N, R = C0.shape
     C0 = C0.reshape(-1, R) @ v
@@ -147,7 +147,7 @@ class als_cross:
       return C0, cores[1:], r, indices
     else:
       return C0, cores[1:], r
-  
+
   def special_core(self):
     # store previous U
     U_prev = self.U0
@@ -161,13 +161,13 @@ class als_cross:
       # construct coeff
       arg = [None] * self.Mc
       for k in range(self.Mc):
-        arg[k] = self.C_core[k] @ self.UC[k][0] 
+        arg[k] = self.C_core[k] @ self.UC[k][0]
 
     # solve deterministic PDE at u indices
     self.U0 = self.assem_solve_fun.solve(arg)
     if self.swp == 1:
       # TODO maybe get via attibute of assem_solve_fun
-      self.Nx = self.U0[0].shape[0] 
+      self.Nx = self.U0[0].shape[0]
 
     self.U0 = np.hstack(self.U0)
 
@@ -175,7 +175,7 @@ class als_cross:
     self.prof.increment('n_PDE_eval', self.ru[0])
 
     # check error
-    self.dx = 1 
+    self.dx = 1
     if U_prev is not None:
       self.dx = np.linalg.norm(self.U0 - U_prev) / np.linalg.norm(self.U0)
 
@@ -187,7 +187,7 @@ class als_cross:
     # exit if tolerance is met
     if self.max_dx < self.tol:
       return True
-    
+
     # reset
     self.max_dx = 0
 
@@ -197,7 +197,7 @@ class als_cross:
     # cast non-orth factor to next core
     if self.swp > 1:
       self.u[0] = v @ self.u[0].reshape(v.shape[-1], -1)
-    
+
     # rank adaption
     if self.kickrank > 0: # TODO and (random_init==0 or swp>1)
       # compute residual at Z indices
@@ -210,7 +210,7 @@ class als_cross:
             crA += self.A0[k][l] * self.ZC[k][0][l,j]
 
           self.Z0[:,j] += crA @ cru[:,j]
-        
+
         self.Z0 -= self.F0[k] @ self.ZC[k][0]
 
       # QR residual
@@ -223,18 +223,18 @@ class als_cross:
       self.U0, v = np.linalg.qr(cru)
       if self.swp > 1:
         self.u[0] = v[:,:self.ru[0]] @ self.u[0].reshape(self.ru[0], -1)
-      
+
       self.ru[0] = self.U0.shape[1]
-    
+
     # TODO evaluate if loop for projection are necessary
     # Project onto solution basis U0
     self.prof.start('t_project')
-   
+
     Uprev = self.U0 # TODO technically dont need to copy here
-    
+
     for k in range(self.Mc):
       UAUk_new = [None] * self.rc[k][0]
-      for j in range(self.rc[k][0]):    
+      for j in range(self.rc[k][0]):
         UAUk_new[j] = np.conjugate(Uprev.T) @ self.A0[k][j] @ Uprev
         UAUk_new[j] = UAUk_new[j].reshape(-1,1)
 
@@ -255,7 +255,7 @@ class als_cross:
         self.ZC[k][0] = np.conjugate(self.Z0.T) @ self.F0[k]
 
     return False
-  
+
   def solve_reduced_system(self,i):
     """
     Solve (block diagonal) reduced systems.
@@ -272,7 +272,7 @@ class als_cross:
       crF += self.UF[k][i-1] @ crC[k]
 
     # assemble and solve blocks
-    # TODO significant speedup (especially for small ranks) available 
+    # TODO significant speedup (especially for small ranks) available
     cru = np.empty((self.ru[i-1], self.n_param[i-1] * self.ru[i]))
     for j in range(self.n_param[i-1] * self.ru[i]):
       Ai = np.zeros(self.ru[i-1] * self.ru[i-1])
@@ -283,11 +283,11 @@ class als_cross:
       cru[:,j] = np.linalg.solve(Ai, crF[:,j])
 
     # check error
-    self.dx = 1 
+    self.dx = 1
     if self.u[i-1] is not None:
       self.dx = np.linalg.norm(cru.flatten() - self.u[i-1].flatten()) / np.linalg.norm(cru)
 
-    self.max_dx = max(self.max_dx, self.dx) 
+    self.max_dx = max(self.max_dx, self.dx)
 
     # update solution
     self.u[i-1] = cru.reshape((self.ru[i-1], self.n_param[i-1],  self.ru[i]))
@@ -310,11 +310,11 @@ class als_cross:
       UAU_new += crA.reshape(-1, self.ru[i]).T
 
     return UAU_new
-  
+
   def step_forward(self, i):
     # truncate solution core
     cru, rv = localcross(
-      self.u[i-1].reshape(-1, self.ru[i]), 
+      self.u[i-1].reshape(-1, self.ru[i]),
       self.tol/np.sqrt(self.d_param)
       )
 
@@ -329,7 +329,7 @@ class als_cross:
         # right interface at Z indices
         crC = self.c_cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.ZC[k][i]
         crC = crC.reshape(self.rc[k][i-1], -1)
-        
+
         crA = self.UAU[k][i-1].reshape(-1, self.rc[k][i-1])
         for j in range(self.n_param[i-1] * self.rz[i]):
           Ai = (crA @ crC[:,j]).reshape(-1, self.ru[i-1])
@@ -350,7 +350,7 @@ class als_cross:
       # QR enriched core
       cru, v = np.linalg.qr(cru)
       rv = v[:, :rv.shape[0]] @ rv
-      
+
       crz_new = crz_new.reshape(-1, self.rz[i])
 
     # cast non orthogonal factor to the next block
@@ -380,7 +380,7 @@ class als_cross:
       crz_new = np.linalg.qr(crz_new)[0]
       self.rz[i] = crz_new.shape[1]
       crz_new = crz_new.reshape((self.rz[i-1], self.n_param[i-1], self.rz[i]))
-      
+
       # TODO verify just changing the slicing works
       # crC = np.transpose(self.c_cores[i-1], (0,2,1))
       # cru = np.transpose(self.u[i-1], (0,2,1))
@@ -393,7 +393,7 @@ class als_cross:
           crA = crA.reshape(-1, self.rc[k][i-1]) @ self.c_cores[k][i-1][:,j,:]
           crA = crA.reshape(self.rz[i], -1).T.reshape(self.ru[i-1],-1)
           crA = np.conjugate(self.u[i-1][:,j,:].T) @ crA
-          self.ZU[k][i] += crA.reshape(-1, self.rz[i]).T 
+          self.ZU[k][i] += crA.reshape(-1, self.rz[i]).T
 
         # RHS
         self.ZC[k][i] = self.ZC[k][i-1] @ self.c_cores[k][i-1].reshape(self.rc[k][i-1], -1)
@@ -407,13 +407,13 @@ class als_cross:
   def step_backward(self, i):
     # truncate solution core (note cru is not orthogonal)
     rv, cru = localcross(
-      self.u[i-1].reshape(self.ru[i-1], -1), 
+      self.u[i-1].reshape(self.ru[i-1], -1),
       self.tol/np.sqrt(self.d_param)
       )
 
     # rank adaption
     if self.kickrank > 0:
-      
+
       U_prev = (rv @ cru).reshape(self.ru[i-1], -1)
       crz = np.zeros((self.rz[i-1], self.n_param[i-1] * self.ru[i]))
       crz_new = np.zeros((self.rz[i-1], self.n_param[i-1] * self.rz[i]))
@@ -448,7 +448,7 @@ class als_cross:
     # TODO why qr again if kickrank==0
     cru, v = np.linalg.qr(cru.T)
     rv = rv @ v.T[:rv.shape[1]]
-    
+
     # maxvol to find local indices
     ind = tt.maxvol.maxvol(cru)
     UU = cru[ind].T
@@ -462,7 +462,7 @@ class als_cross:
       self.u[i-2] = self.u[i-2].reshape((self.ru[i-2], self.n_param[i-2], self.ru[i-1]))
     else:
       self.U0 = self.U0 @ rv
-    
+
     # update solution core
     self.u[i-1] = cru.reshape((self.ru[i-1], self.n_param[i-1], self.ru[i]))
 
@@ -504,10 +504,10 @@ class als_cross:
       function implementing FE solver.
     tol: scalar
       truncation and stopping tolerance
-    **args: 
+    **args:
       optional named arguments described in `parse_args`
     """
-      
+
     # store parameters
     self.params = params # TODO treatment of multiple parameters
     self.assem_solve_fun = assem_solve_fun
@@ -533,14 +533,14 @@ class als_cross:
     self.c_cores = [None] * len(self.params)
     self.C_core = [None] * len(self.params)
     for k, param in enumerate(self.params):
-      # keep maxvol indices of first param TT 
+      # keep maxvol indices of first param TT
       if k == 0:
         self.C_core[k], self.c_cores[k], self.rc[k], indices = \
           self.orthogonalize_tensor(tt.vector.to_list(param))
       else:
         self.C_core[k], self.c_cores[k], self.rc[k] = \
           self.orthogonalize_tensor(tt.vector.to_list(param), return_indices=False)
-    
+
     # init matrix and rhs variables
     self.A0 = [None] * self.Mc
     self.F0 = [None] * self.Mc
@@ -548,11 +548,11 @@ class als_cross:
     for k in range(self.Mc):
       self.A0[k], self.F0[k] = assem_solve_fun.linear_system(k, self.C_core[k])
       self.F0[k] = np.hstack(self.F0[k])
-    
-    ind_rem = [None] * self.d_param
-    ind_quot = [None] * self.d_param      
 
-    # init index set    
+    ind_rem = [None] * self.d_param
+    ind_quot = [None] * self.d_param
+
+    # init index set
     # EITHER get random indices
     if self.random_init > 0:
       self.Ju = np.empty((self.random_init,0), dtype=np.int32)
@@ -560,7 +560,7 @@ class als_cross:
       # TODO original code only to i=1. Why?
       for i in reversed(range(self.d_param)):
         indices = self.rng.choice(
-          self.n_param[i]*self.rc[0][i+1], 
+          self.n_param[i]*self.rc[0][i+1],
           size=(self.random_init),
           replace=False, shuffle=False
           )
@@ -571,7 +571,7 @@ class als_cross:
 
     # OR use indices derived from (first) param
     else:
-      self.Ju = np.empty((self.rc[0][-2],0), dtype=np.int32) 
+      self.Ju = np.empty((self.rc[0][-2],0), dtype=np.int32)
       for i in reversed(range(self.d_param)):
         ind_quot[i], ind_rem[i] = np.divmod(indices[i], self.rc[0][i+1])
         self.Ju = np.hstack([ind_quot[i].reshape(-1,1), self.Ju[ind_rem[i]]])
@@ -582,9 +582,9 @@ class als_cross:
     self.UC = [[np.ones((1,1))] for p in self.params]
     for k in range(self.Mc):
       xi = np.ones((1, self.rc[k][-2]))
-      for i in reversed(range(self.d_param)):    
-        xi = np.einsum('i...j,j...->i...', 
-                       self.c_cores[k][i][:, ind_quot[i], :], 
+      for i in reversed(range(self.d_param)):
+        xi = np.einsum('i...j,j...->i...',
+                       self.c_cores[k][i][:, ind_quot[i], :],
                        xi[:, ind_rem[i]])
         self.UC[k] = [xi] + self.UC[k]
 
@@ -593,7 +593,7 @@ class als_cross:
       # right proj ZAZ at residual indices
       self.ZU = [[np.ones((1,1))] for p in self.params]
       # right proj ZF at residual indices
-      self.ZC = [[np.ones((1,1))] for p in self.params]  
+      self.ZC = [[np.ones((1,1))] for p in self.params]
       # residual ranks are relative to (first) param ranks
       self.rz = np.round(self.kickrank * self.rc[0] / np.max(self.rc[0]))
       self.rz = np.clip(self.rz, a_min=1, a_max=None).astype(np.int32)
@@ -605,16 +605,16 @@ class als_cross:
           self.ZU[k] = [self.rng.standard_normal((self.ru[i], self.rz[i]))] + self.ZU[k]
           # random initial indices
           indices = self.rng.choice(
-            self.n_param[i]*self.rz[i+1], 
+            self.n_param[i]*self.rz[i+1],
             size=(self.rz[i]),
             replace=False, shuffle=False
             )
           ind_quot, ind_rem = np.divmod(indices, self.rz[i+1])
-          xi = np.einsum('i...j,j...->i...', 
-                          self.c_cores[k][i][:, ind_quot, :], 
+          xi = np.einsum('i...j,j...->i...',
+                          self.c_cores[k][i][:, ind_quot, :],
                           xi[:, ind_rem])
           self.ZC[k] = [xi] + self.ZC[k]
-        
+
     # init solution variables
     self.U0 = None
     self.u = [None] * self.d_param
@@ -639,7 +639,7 @@ class als_cross:
         tol_reached =  self.special_core()
         if tol_reached:
           break
-        
+
         # TODO dont need to do last core when iterating back
         for i in range(1, self.d_param+1):
           # solve (block diagonal) reduced system
@@ -650,7 +650,7 @@ class als_cross:
 
         if self.verbose > 0:
           print(f'= swp={self.swp} fwd finish, max_dx={self.max_dx:.3e}, max_rank = {max(self.ru)}')
-        
+
         # reset
         self.max_dx = 0
 
@@ -678,8 +678,8 @@ class als_cross:
     """
     return tt.tensor.from_list(
       [self.U0.reshape((1, self.Nx, self.ru[0]))] + self.u
-      )  
-  
+      )
+
   def get_stats(self):
     """
     Get stats collected by profiler.
@@ -689,4 +689,4 @@ class als_cross:
     data : dict
       Dict containing (name, value) pairs of metrics collected by profiler.
     """
-    return self.prof.get_data()      
+    return self.prof.get_data()
