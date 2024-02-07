@@ -555,6 +555,8 @@ class als_cross:
     # init index set
     # EITHER get random indices
     if self.random_init > 0:
+      self.ru = np.full(self.d_param+1, self.random_init)
+      self.ru[-1] = 1
       self.Ju = np.empty((self.random_init,0), dtype=np.int32)
       xi = np.ones((1, self.random_init))
       # TODO original code only to i=1. Why?
@@ -565,9 +567,7 @@ class als_cross:
           replace=False, shuffle=False
           )
         ind_quot[i], ind_rem[i] = np.divmod(indices, self.rc[0][i+1])
-        self.rng.integers(self.n_param[i], size=(self.random_init))
-        self.Ju = np.hstack([indices[i], self.Ju])
-        self.ru[i] = self.random_init
+        self.Ju = np.hstack([ind_quot[i].reshape(-1,1), self.Ju[ind_rem[i]]])
 
     # OR use indices derived from (first) param
     else:
