@@ -159,9 +159,11 @@ class als_cross:
       arg = self.Ju
     else:
       # construct coeff
-      arg = [None] * self.Mc
-      for k in range(self.Mc):
-        arg[k] = self.C_core[k] @ self.UC[k][0]
+      arg = [[None] * self.M_A, [None] * self.M_b]
+      for k in range(self.M_A):
+        arg[0][k] = self.A_core[k] @ self.UA[k][0]
+      for k in range(self.M_b):
+        arg[1][k] = self.b_core[k] @ self.Ub[k][0]
 
     # solve deterministic PDE at u indices
     self.U0 = self.assem_solve_fun.solve(arg)
@@ -202,16 +204,17 @@ class als_cross:
     if self.kickrank > 0: # TODO and (random_init==0 or swp>1)
       # compute residual at Z indices
       self.Z0 = np.zeros((self.Nx, self.rz[0]))
-      for k in range(self.Mc):
+      for k in range(self.M_A):
         cru = self.U0 @ v @ self.ZU[k][0]
         for j in range(self.rz[0]):
           crA = np.zeros((self.Nx, self.Nx))
-          for l in range(self.rc[k][0]):
-            crA += self.A0[k][l] * self.ZC[k][0][l,j]
+          for l in range(self.rc_A[k][0]):
+            crA += self.A0[k][l] * self.ZA[k][0][l,j]
 
           self.Z0[:,j] += crA @ cru[:,j]
 
-        self.Z0 -= self.F0[k] @ self.ZC[k][0]
+      for k in range(self.M_b):
+        self.Z0 -= self.F0[k] @ self.Zb[k][0]
 
       # QR residual
       self.Z0 = np.linalg.qr(self.Z0)[0]
@@ -232,27 +235,31 @@ class als_cross:
 
     Uprev = self.U0 # TODO technically dont need to copy here
 
-    for k in range(self.Mc):
-      UAUk_new = [None] * self.rc[k][0]
-      for j in range(self.rc[k][0]):
+    for k in range(self.M_A):
+      UAUk_new = [None] * self.rc_A[k][0]
+      for j in range(self.rc_A[k][0]):
         UAUk_new[j] = np.conjugate(Uprev.T) @ self.A0[k][j] @ Uprev
         UAUk_new[j] = UAUk_new[j].reshape(-1,1)
 
       self.UAU[k][0] = np.hstack(UAUk_new)
+    
+    for k in range(self.M_b):
       self.UF[k][0] = (np.conjugate(Uprev.T) @ self.F0[k])
 
     self.prof.stop('t_project')
 
     # Project onto residual
     if self.kickrank > 0:
-      for k in range(self.Mc):
-        ZU_new = [None] * self.rc[k][0]
-        for j in range(self.rc[k][0]):
+      for k in range(self.M_A):
+        ZU_new = [None] * self.rc_A[k][0]
+        for j in range(self.rc_A[k][0]):
           ZU_new[j] = np.conjugate(self.Z0.T) @ self.A0[k][j] @ Uprev
           ZU_new[j] = ZU_new[j].reshape(-1,1)
 
         self.ZU[k][0] = np.hstack(ZU_new)
-        self.ZC[k][0] = np.conjugate(self.Z0.T) @ self.F0[k]
+      
+      for k in range(self.M_b):
+        self.Zb[k][0] = np.conjugate(self.Z0.T) @ self.F0[k]
 
     return False
 
@@ -261,23 +268,24 @@ class als_cross:
     Solve (block diagonal) reduced systems.
     """
     # right hand interface projection
-    crC = [None] * self.Mc
-    for k in range(self.Mc):
-      crC[k] = self.c_cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.UC[k][i]
-      crC[k] = crC[k].reshape(self.rc[k][i-1], -1)
+    crA = [None] * self.M_A
+    for k in range(self.M_A):
+      crA[k] = self.A_cores[k][i-1].reshape(-1, self.rc_A[k][i]) @ self.UA[k][i]
+      crA[k] = crA[k].reshape(self.rc_A[k][i-1], -1)
 
     # compute RHS projection
     crF = np.zeros((self.ru[i-1], self.n_param[i-1] * self.ru[i]))
-    for k in range(self.Mc):
-      crF += self.UF[k][i-1] @ crC[k]
+    for k in range(self.M_b):
+      crb = self.b_cores[k][i-1].reshape(-1, self.rc_b[k][i]) @ self.Ub[k][i]
+      crF += self.UF[k][i-1] @ crb.reshape(self.rc_b[k][i-1], -1)
 
     # assemble and solve blocks
     # TODO significant speedup (especially for small ranks) available
     cru = np.empty((self.ru[i-1], self.n_param[i-1] * self.ru[i]))
     for j in range(self.n_param[i-1] * self.ru[i]):
       Ai = np.zeros(self.ru[i-1] * self.ru[i-1])
-      for k in range(self.Mc):
-        Ai += self.UAU[k][i-1].reshape(-1, self.rc[k][i-1]) @ crC[k][:,j]
+      for k in range(self.M_A):
+        Ai += self.UAU[k][i-1].reshape(-1, self.rc_A[k][i-1]) @ crA[k][:,j]
 
       Ai = np.reshape(Ai, (self.ru[i-1], self.ru[i-1]))
       cru[:,j] = np.linalg.solve(Ai, crF[:,j])
@@ -296,15 +304,15 @@ class als_cross:
     """
     Update right interface projections.
     """
-    UAU_new = np.zeros((self.ru[i], self.ru[i] * self.rc[k][i]))
+    UAU_new = np.zeros((self.ru[i], self.ru[i] * self.rc_A[k][i]))
 
     UAU = self.UAU[k][i-1].reshape(self.ru[i-1], -1)
-    crC = np.transpose(self.c_cores[k][i-1], (0,2,1))
+    crC = np.transpose(self.A_cores[k][i-1], (0,2,1))
     cru = np.transpose(self.u[i-1], (0,2,1))
     for j in range(self.n_param[i-1]):
       v = np.conjugate(cru[:,:,j].T)
       crA = v @ UAU
-      crA = crA.reshape(-1, self.rc[k][i-1]) @ crC[:,:,j]
+      crA = crA.reshape(-1, self.rc_A[k][i-1]) @ crC[:,:,j]
       crA = crA.reshape(self.ru[i], -1).T.reshape(self.ru[i-1], -1)
       crA = v @ crA
       UAU_new += crA.reshape(-1, self.ru[i]).T
@@ -323,27 +331,30 @@ class als_cross:
       # compute residual
       crz = np.zeros(((self.ru[i-1], self.n_param[i-1] * self.rz[i])))
       crz_new = np.zeros((self.rz[i-1], self.n_param[i-1] * self.rz[i]))
-      for k in range(self.Mc):
+      for k in range(self.M_A):
         # solution interface at U indices
         U_prev = (cru @ rv @ self.ZU[k][i]).reshape(self.ru[i-1], -1)
         # right interface at Z indices
-        crC = self.c_cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.ZC[k][i]
-        crC = crC.reshape(self.rc[k][i-1], -1)
+        crC = self.A_cores[k][i-1].reshape(-1, self.rc_A[k][i]) @ self.ZA[k][i]
+        crC = crC.reshape(self.rc_A[k][i-1], -1)
 
-        crA = self.UAU[k][i-1].reshape(-1, self.rc[k][i-1])
+        crA = self.UAU[k][i-1].reshape(-1, self.rc_A[k][i-1])
         for j in range(self.n_param[i-1] * self.rz[i]):
           Ai = (crA @ crC[:,j]).reshape(-1, self.ru[i-1])
           crz[:,j] += Ai @ U_prev[:,j]
 
-        crz -= self.UF[k][i-1] @ crC
-
         # Update residual
-        crA = self.ZU[k][i-1].reshape(-1, self.rc[k][i-1])
+        crA = self.ZU[k][i-1].reshape(-1, self.rc_A[k][i-1])
         for j in range(self.n_param[i-1] * self.rz[i]):
           Ai = (crA @ crC[:,j]).reshape(self.rz[i-1], self.ru[i-1])
           crz_new[:,j] += Ai @ U_prev[:,j]
 
-        crz_new -= self.ZC[k][i-1] @ crC
+      for k in range(self.M_b):
+        crb = self.b_cores[k][i-1].reshape(-1, self.rc_b[k][i]) @ self.Zb[k][i]
+        crb = crC.reshape(self.rc_b[k][i-1], -1)
+
+        crz_new -= self.Zb[k][i-1] @ crb
+        crz -= self.UF[k][i-1] @ crb
 
       # enrich by combining solution and residual
       cru = np.hstack((cru, crz.reshape(-1, self.rz[i])))
@@ -363,13 +374,13 @@ class als_cross:
     self.u[i-1] = cru.reshape((self.ru[i-1], self.n_param[i-1], self.ru[i]))
 
     # update left interface projections
-    for k in range(self.Mc):
+    for k in range(self.M_A):
       self.UAU[k][i] = self.project_blockdiag(i,k)
 
     # update RHS projection interfaces
-    for k in range(self.Mc):
-      UFik = self.UF[k][i-1] @ self.c_cores[k][i-1].reshape(self.rc[k][i-1], -1)
-      self.UF[k][i] = np.conjugate(cru.T) @ UFik.reshape(-1, self.rc[k][i])
+    for k in range(self.M_b):
+      UFik = self.UF[k][i-1] @ self.b_cores[k][i-1].reshape(self.rc_b[k][i-1], -1)
+      self.UF[k][i] = np.conjugate(cru.T) @ UFik.reshape(-1, self.rc_b[k][i])
 
     # Projections with the residual
     if self.kickrank > 0:
@@ -385,20 +396,26 @@ class als_cross:
       # crC = np.transpose(self.c_cores[i-1], (0,2,1))
       # cru = np.transpose(self.u[i-1], (0,2,1))
       # crz_new = np.transpose(crz_new, (0,2,1))
-      for k in range(self.Mc):
+      for k in range(self.M_A):
         # matrix
-        self.ZU[k][i] = np.zeros((self.rz[i], self.ru[i] * self.rc[k][i]))
+        self.ZU[k][i] = np.zeros((self.rz[i], self.ru[i] * self.rc_A[k][i]))
         for j in range(self.n_param[i-1]):
           crA = np.conjugate(crz_new[:,j,:].T) @ self.ZU[k][i-1].reshape(self.rz[i-1], -1)
-          crA = crA.reshape(-1, self.rc[k][i-1]) @ self.c_cores[k][i-1][:,j,:]
+          crA = crA.reshape(-1, self.rc_A[k][i-1]) @ self.A_cores[k][i-1][:,j,:]
           crA = crA.reshape(self.rz[i], -1).T.reshape(self.ru[i-1],-1)
           crA = np.conjugate(self.u[i-1][:,j,:].T) @ crA
           self.ZU[k][i] += crA.reshape(-1, self.rz[i]).T
 
+        # TODO do i need these
+        # self.ZA[k][i] = self.ZA[k][i-1] @ self.A_cores[k][i-1].reshape(self.rc_A[k][i-1], -1)
+        # self.ZA[k][i] = self.ZA[k][i].reshape(-1, self.rc_A[k][i])
+        # self.ZA[k][i] = np.conjugate(crz_new.reshape(-1, self.rz[i]).T) @ self.ZA[k][i]
+
+      for k in range(self.M_b):
         # RHS
-        self.ZC[k][i] = self.ZC[k][i-1] @ self.c_cores[k][i-1].reshape(self.rc[k][i-1], -1)
-        self.ZC[k][i] =self.ZC[k][i].reshape(-1, self.rc[k][i])
-        self.ZC[k][i] = np.conjugate(crz_new.reshape(-1, self.rz[i]).T) @ self.ZC[k][i]
+        self.Zb[k][i] = self.Zb[k][i-1] @ self.b_cores[k][i-1].reshape(self.rc_b[k][i-1], -1)
+        self.Zb[k][i] = self.Zb[k][i].reshape(-1, self.rc_b[k][i])
+        self.Zb[k][i] = np.conjugate(crz_new.reshape(-1, self.rz[i]).T) @ self.Zb[k][i]
 
     if self.verbose > 0:
       print(f'= swp={self.swp} core {i}>, dx={self.dx:.3e}, rank = [{self.ru[i-1]}, {self.ru[i]}]')
@@ -417,27 +434,32 @@ class als_cross:
       U_prev = (rv @ cru).reshape(self.ru[i-1], -1)
       crz = np.zeros((self.rz[i-1], self.n_param[i-1] * self.ru[i]))
       crz_new = np.zeros((self.rz[i-1], self.n_param[i-1] * self.rz[i]))
-      for k in range(self.Mc):
-        crA = self.ZU[k][i-1].reshape(-1, self.rc[k][i-1])
+      for k in range(self.M_A):
+        crA = self.ZU[k][i-1].reshape(-1, self.rc_A[k][i-1])
         # compute residual
-        crC = self.c_cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.UC[k][i]
-        crC = crC.reshape(self.rc[k][i-1], -1)
+        crC = self.A_cores[k][i-1].reshape(-1, self.rc_A[k][i]) @ self.UA[k][i]
+        crC = crC.reshape(self.rc_A[k][i-1], -1)
         for j in range(self.n_param[i-1] * self.ru[i]):
           Ai = (crA @ crC[:,j]).reshape(-1, self.ru[i-1])
           crz[:,j] += Ai @ U_prev[:,j]
 
-        crz -= self.ZC[k][i-1] @ crC
-
         # update residual
-        crC = self.c_cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.ZC[k][i]
-        crC = crC.reshape(self.rc[k][i-1], -1)
+        crC = self.A_cores[k][i-1].reshape(-1, self.rc_A[k][i]) @ self.ZA[k][i]
+        crC = crC.reshape(self.rc_A[k][i-1], -1)
         UZ = U_prev.reshape(-1, self.ru[i]) @ self.ZU[k][i]
         UZ = UZ.reshape(self.ru[i-1], -1)
         for j in range(self.n_param[i-1] * self.rz[i]):
           Ai = (crA @ crC[:,j]).reshape(-1, self.ru[i-1])
           crz_new[:,j] += Ai @ UZ[:,j]
 
-        crz_new -= self.ZC[k][i-1] @ crC
+      for k in range(self.M_b):
+        crC = self.b_cores[k][i-1].reshape(-1, self.rc_b[k][i]) @ self.Ub[k][i]
+        crC = crC.reshape(self.rc_b[k][i-1], -1)
+        crz -= self.Zb[k][i-1] @ crC
+
+        crC = self.b_cores[k][i-1].reshape(-1, self.rc_b[k][i]) @ self.Zb[k][i]
+        crC = crC.reshape(self.rc_b[k][i-1], -1)
+        crz_new -= self.Zb[k][i-1] @ crC
 
       # enrichment
       cru = np.vstack((cru, crz))
@@ -471,28 +493,37 @@ class als_cross:
     self.Ju = np.hstack([ind_quot.reshape(-1,1), self.Ju[ind_rem]])
 
     # right interface projection (sample param on U indices)
-    for k in range(self.Mc):
-      self.UC[k][i-1] = self.c_cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.UC[k][i]
-      self.UC[k][i-1] = self.UC[k][i-1].reshape(self.rc[k][i-1], -1)[:, ind]
+    for k in range(self.M_A):
+      self.UA[k][i-1] = self.A_cores[k][i-1].reshape(-1, self.rc_A[k][i]) @ self.UA[k][i]
+      self.UA[k][i-1] = self.UA[k][i-1].reshape(self.rc_A[k][i-1], -1)[:, ind]
+
+    for k in range(self.M_b):
+      self.Ub[k][i-1] = self.b_cores[k][i-1].reshape(-1, self.rc_b[k][i]) @ self.Ub[k][i]
+      self.Ub[k][i-1] = self.Ub[k][i-1].reshape(self.rc_b[k][i-1], -1)[:, ind]
 
     if self.kickrank > 0:
       # QR and maxvol residual core
       crz_new = np.linalg.qr(crz_new.reshape(self.rz[i-1], -1).T)[0]
       self.rz[i-1] = crz_new.shape[1]
       ind = tt.maxvol.maxvol(crz_new)
-      for k in range(self.Mc):
+      for k in range(self.M_A):
         # sample C at Z indices
-        self.ZC[k][i-1] = self.c_cores[k][i-1].reshape(-1, self.rc[k][i]) @ self.ZC[k][i]
-        self.ZC[k][i-1] = self.ZC[k][i-1].reshape(self.rc[k][i-1], -1)[:, ind]
+        self.ZA[k][i-1] = self.A_cores[k][i-1].reshape(-1, self.rc_A[k][i]) @ self.ZA[k][i]
+        self.ZA[k][i-1] = self.ZA[k][i-1].reshape(self.rc_A[k][i-1], -1)[:, ind]
         # sample U at Z indices
         self.ZU[k][i-1] = self.u[i-1].reshape(-1, self.ru[i]) @ self.ZU[k][i]
         self.ZU[k][i-1] = self.ZU[k][i-1].reshape(self.ru[i-1], -1)[:, ind]
+      
+      for k in range(self.M_b):
+        # sample C at Z indices
+        self.Zb[k][i-1] = self.b_cores[k][i-1].reshape(-1, self.rc_b[k][i]) @ self.Zb[k][i]
+        self.Zb[k][i-1] = self.Zb[k][i-1].reshape(self.rc_b[k][i-1], -1)[:, ind]
 
     if self.verbose > 0:
       print(f'= swp={self.swp} core <{i}, dx={self.dx:.3e}, rank = [{self.ru[i-1]}, {self.ru[i]}]')
 
 
-  def __init__(self, params, assem_solve_fun, tol, **args):
+  def __init__(self, A_params, b_params, assem_solve_fun, tol, **args):
     """
     Initialize ALS cross algorithm.
 
@@ -509,7 +540,8 @@ class als_cross:
     """
 
     # store parameters
-    self.params = params # TODO treatment of multiple parameters
+    self.A_params = A_params
+    self.b_params = b_params
     self.assem_solve_fun = assem_solve_fun
     self.tol = tol
 
@@ -520,34 +552,40 @@ class als_cross:
     self.rng = np.random.default_rng()
 
     # grid sizes
-    self.n_param = self.params[0].n[1:]     # parametric grid sizes
-    self.d_param = self.params[0].d - 1     # parameter dimension
-    self.rc = [p.r[1:] for p in params]     # TT ranks of the parameters
-    self.Mc = len(self.params)              # number of parameter TTs
-    self.Rc = [p.r[0] for p in params]      # components per param TT
+    self.n_param = self.A_params[0].n[1:]     # parametric grid sizes
+    self.d_param = self.A_params[0].d - 1     # parameter dimension
+    # for matrix
+    self.rc_A = [p.r[1:] for p in A_params]     # TT ranks of the parameters
+    self.M_A = len(self.A_params)               # number of parameter TTs
+    self.Rc_A = [p.r[0] for p in A_params]      # components per param TT
+    self.rc_b = [p.r[1:] for p in b_params]     # TT ranks of the parameters
+    self.M_b = len(self.b_params)               # number of parameter TTs
+    self.Rc_b = [p.r[0] for p in b_params]      # components per param TT
     self.ru = None                # TT ranks of the solution
     self.rz = None                # TT ranks of the residual
     self.Nx = None
 
     # orthogonalize parameter TT
-    self.c_cores = [None] * len(self.params)
-    self.C_core = [None] * len(self.params)
-    for k, param in enumerate(self.params):
+    self.A_cores = [None] * len(self.A_params)
+    self.A_core = [None] * len(self.A_params)
+    for k, param in enumerate(self.A_params):
       # keep maxvol indices of first param TT
       if k == 0:
-        self.C_core[k], self.c_cores[k], self.rc[k], indices = \
+        self.A_core[k], self.A_cores[k], self.rc_A[k], indices = \
           self.orthogonalize_tensor(tt.vector.to_list(param))
       else:
-        self.C_core[k], self.c_cores[k], self.rc[k] = \
+        self.A_core[k], self.A_cores[k], self.rc_A[k] = \
           self.orthogonalize_tensor(tt.vector.to_list(param), return_indices=False)
+        
+    self.b_cores = [None] * len(self.b_params)
+    self.b_core = [None] * len(self.b_params)
+    for k, param in enumerate(self.b_params):
+      self.b_core[k], self.b_cores[k], self.rc_b[k] = \
+        self.orthogonalize_tensor(tt.vector.to_list(param), return_indices=False)
 
     # init matrix and rhs variables
-    self.A0 = [None] * self.Mc
-    self.F0 = [None] * self.Mc
-    # need to get matrix and rhs for each component
-    for k in range(self.Mc):
-      self.A0[k], self.F0[k] = assem_solve_fun.linear_system(k, self.C_core[k])
-      self.F0[k] = np.hstack(self.F0[k])
+    self.A0 = assem_solve_fun.matrix(self.A_core)
+    self.F0 = np.hstack(assem_solve_fun.rhs(self.b_core))
 
     ind_rem = [None] * self.d_param
     ind_quot = [None] * self.d_param
@@ -558,70 +596,96 @@ class als_cross:
       self.ru = np.full(self.d_param+1, self.random_init)
       self.ru[-1] = 1
       self.Ju = np.empty((self.random_init,0), dtype=np.int32)
-      xi = np.ones((1, self.random_init))
       # TODO original code only to i=1. Why?
       for i in reversed(range(self.d_param)):
         indices = self.rng.choice(
-          self.n_param[i]*self.rc[0][i+1],
+          self.n_param[i]*self.random_init,
           size=(self.random_init),
           replace=False, shuffle=False
           )
-        ind_quot[i], ind_rem[i] = np.divmod(indices, self.rc[0][i+1])
+        ind_quot[i], ind_rem[i] = np.divmod(indices, self.random_init)
         self.Ju = np.hstack([ind_quot[i].reshape(-1,1), self.Ju[ind_rem[i]]])
 
     # OR use indices derived from (first) param
     else:
-      self.Ju = np.empty((self.rc[0][-2],0), dtype=np.int32)
+      self.Ju = np.empty((self.rc_A[0][-2],0), dtype=np.int32)
       for i in reversed(range(self.d_param)):
-        ind_quot[i], ind_rem[i] = np.divmod(indices[i], self.rc[0][i+1])
+        ind_quot[i], ind_rem[i] = np.divmod(indices[i], self.rc_A[0][i+1])
         self.Ju = np.hstack([ind_quot[i].reshape(-1,1), self.Ju[ind_rem[i]]])
 
-      self.ru = self.rc[0].copy()
+      self.ru = self.rc_A[0].copy()
 
-    # Init right samples of param at indices Ju
-    self.UC = [[np.ones((1,1))] for p in self.params]
-    for k in range(self.Mc):
-      xi = np.ones((1, self.rc[k][-2]))
+    # Init right samples of matrix and rhs param at indices Ju
+    self.UA = [[np.ones((1,1))] for p in self.A_params]
+    for k in range(self.M_A):
+      if self.random_init > 0:
+        xi = np.ones((1, self.random_init))
+      else:
+        xi = np.ones((1, self.ru[-2]))
       for i in reversed(range(self.d_param)):
         xi = np.einsum('i...j,j...->i...',
-                       self.c_cores[k][i][:, ind_quot[i], :],
+                       self.A_cores[k][i][:, ind_quot[i], :],
                        xi[:, ind_rem[i]])
-        self.UC[k] = [xi] + self.UC[k]
+        self.UA[k] = [xi] + self.UA[k]
+
+    self.Ub = [[np.ones((1,1))] for p in self.b_params]
+    for k in range(self.M_b):
+      if self.random_init > 0:
+        xi = np.ones((1, self.random_init))
+      else:
+        xi = np.ones((1, self.ru[-2]))
+      for i in reversed(range(self.d_param)):
+        xi = np.einsum('i...j,j...->i...',
+                       self.b_cores[k][i][:, ind_quot[i], :],
+                       xi[:, ind_rem[i]])
+        self.Ub[k] = [xi] + self.Ub[k]
 
     # init residual
     if self.kickrank > 0:
       # right proj ZAZ at residual indices
-      self.ZU = [[np.ones((1,1))] for p in self.params]
-      # right proj ZF at residual indices
-      self.ZC = [[np.ones((1,1))] for p in self.params]
+      self.ZU = [[np.ones((1,1))] for p in self.A_params]
+      # right proj of coeffs at residual indices
+      self.ZA = [[np.ones((1,1))] for p in self.A_params]
+      self.Zb = [[np.ones((1,1))] for p in self.b_params]
       # residual ranks are relative to (first) param ranks
-      self.rz = np.round(self.kickrank * self.rc[0] / np.max(self.rc[0]))
+      self.rz = np.round(self.kickrank * self.rc_A[0] / np.max(self.rc_A[0]))
       self.rz = np.clip(self.rz, a_min=1, a_max=None).astype(np.int32)
       self.rz[-1] = 1
-      for k in range(self.Mc):
+      # random initial indices
+      for i in reversed(range(self.d_param)):
+        indices = self.rng.choice(
+          self.n_param[i]*self.rz[i+1],
+          size=(self.rz[i]),
+          replace=False, shuffle=False
+          )
+        ind_quot[i], ind_rem[i] = np.divmod(indices, self.rz[i+1])
+
+      for k in range(self.M_A):
         xi = np.ones((1, self.rz[-2]))
         for i in reversed(range(self.d_param)):
           # no solution yet, intialize with random data
           self.ZU[k] = [self.rng.standard_normal((self.ru[i], self.rz[i]))] + self.ZU[k]
-          # random initial indices
-          indices = self.rng.choice(
-            self.n_param[i]*self.rz[i+1],
-            size=(self.rz[i]),
-            replace=False, shuffle=False
-            )
-          ind_quot, ind_rem = np.divmod(indices, self.rz[i+1])
+          
           xi = np.einsum('i...j,j...->i...',
-                          self.c_cores[k][i][:, ind_quot, :],
-                          xi[:, ind_rem])
-          self.ZC[k] = [xi] + self.ZC[k]
+                          self.A_cores[k][i][:, ind_quot[i], :],
+                          xi[:, ind_rem[i]])
+          self.ZA[k] = [xi] + self.ZA[k]
+      
+      for k in range(self.M_b):
+        xi = np.ones((1, self.rz[-2]))
+        for i in reversed(range(self.d_param)):
+          xi = np.einsum('i...j,j...->i...',
+                          self.b_cores[k][i][:, ind_quot[i], :],
+                          xi[:, ind_rem[i]])
+          self.Zb[k] = [xi] + self.Zb[k]
 
     # init solution variables
     self.U0 = None
     self.u = [None] * self.d_param
 
     # init projection variables
-    self.UAU = [[None] * (self.d_param + 1) for k in range(self.Mc)]
-    self.UF = [[None] * (self.d_param + 1) for k in range(self.Mc)]
+    self.UAU = [[None] * (self.d_param + 1) for k in range(self.M_A)]
+    self.UF = [[None] * (self.d_param + 1) for k in range(self.M_b)]
 
     # init main loop flags and counters
     self.forward_is_next = True
