@@ -211,7 +211,7 @@ class als_cross:
           for l in range(self.rc_A[k][0]):
             crA += self.A0[k][l] * self.ZA[k][0][l,j]
 
-          self.Z0[:,j] += crA @ cru[:,j]
+          self.Z0[:,j] += np.ravel(crA @ cru[:,j])
 
       for k in range(self.M_b):
         self.Z0 -= self.F0[k] @ self.Zb[k][0]
@@ -351,7 +351,7 @@ class als_cross:
 
       for k in range(self.M_b):
         crb = self.b_cores[k][i-1].reshape(-1, self.rc_b[k][i]) @ self.Zb[k][i]
-        crb = crC.reshape(self.rc_b[k][i-1], -1)
+        crb = crb.reshape(self.rc_b[k][i-1], -1)
 
         crz_new -= self.Zb[k][i-1] @ crb
         crz -= self.UF[k][i-1] @ crb
@@ -585,7 +585,7 @@ class als_cross:
 
     # init matrix and rhs variables
     self.A0 = assem_solve_fun.matrix(self.A_core)
-    self.F0 = np.hstack(assem_solve_fun.rhs(self.b_core))
+    self.F0 = [np.hstack(F0k) for F0k in assem_solve_fun.rhs(self.b_core)]
 
     ind_rem = [None] * self.d_param
     ind_quot = [None] * self.d_param
