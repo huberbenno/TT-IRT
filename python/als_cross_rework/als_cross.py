@@ -2,6 +2,7 @@ import numpy as np
 import tt
 import warnings
 from time import perf_counter
+from scipy.sparse import csr_matrix, issparse
 
 from localcross import localcross
 
@@ -202,12 +203,16 @@ class als_cross:
 
     # rank adaption
     if self.kickrank > 0: # TODO and (random_init==0 or swp>1)
+      self.prof.start('t_amen')
       # compute residual at Z indices
       self.Z0 = np.zeros((self.Nx, self.rz[0]))
       for k in range(self.M_A):
         cru = self.U0 @ v @ self.ZU[k][0]
         for j in range(self.rz[0]):
-          crA = np.zeros((self.Nx, self.Nx))
+          if issparse(self.A0[k][0]):
+            crA = csr_matrix((self.Nx, self.Nx))
+          else:
+            crA = np.zeros((self.Nx, self.Nx))
           for l in range(self.rc_A[k][0]):
             crA += self.A0[k][l] * self.ZA[k][0][l,j]
 
@@ -228,6 +233,8 @@ class als_cross:
         self.u[0] = v[:,:self.ru[0]] @ self.u[0].reshape(self.ru[0], -1)
 
       self.ru[0] = self.U0.shape[1]
+
+      self.prof.stop('t_amen')
 
     # TODO evaluate if loop for projection are necessary
     # Project onto solution basis U0
@@ -250,6 +257,7 @@ class als_cross:
 
     # Project onto residual
     if self.kickrank > 0:
+      self.prof.start('t_amen')
       for k in range(self.M_A):
         ZU_new = [None] * self.rc_A[k][0]
         for j in range(self.rc_A[k][0]):
@@ -260,6 +268,8 @@ class als_cross:
       
       for k in range(self.M_b):
         self.Zb[k][0] = np.conjugate(self.Z0.T) @ self.F0[k]
+      
+      self.prof.stop('t_amen')
 
     return False
 
@@ -694,7 +704,10 @@ class als_cross:
     self.tol_reached = False    # set if tolerance check passes
 
     # init profiler
-    self.prof = self.profiler(['t_solve', 't_project'], ['n_PDE_eval'])
+    self.prof = self.profiler(
+      ['t_solve', 't_project', 't_amen'], 
+      ['n_PDE_eval']
+      )
 
   def iterate(self, nswp=1):
     for k in range(nswp):
