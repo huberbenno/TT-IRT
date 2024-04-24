@@ -599,24 +599,6 @@ class als_cross:
 
     self.Nx = self.A0[0][0].shape[1]
 
-    self.A_dense = np.zeros((np.prod(self.n_param), self.Nx, self.Nx))
-    for k, param in enumerate(self.A_params):
-      temp = np.ones((1,1))
-      for i in reversed(range(self.d_param)):
-        temp = np.tensordot(self.A_cores[k][i], temp, 1)
-      temp = np.tensordot(np.stack(self.A0[k], axis=-1), temp, 1)
-      temp = temp.reshape(self.Nx, self.Nx, -1)
-      self.A_dense += np.moveaxis(temp, -1, 0)
-
-    self.b_dense = np.zeros((np.prod(self.n_param), self.Nx))
-    for k, param in enumerate(self.b_params):
-      temp = np.ones((1,1))
-      for i in reversed(range(self.d_param)):
-        temp = np.tensordot(self.b_cores[k][i], temp, 1)
-      temp = np.tensordot(self.F0[k], temp, 1)
-      temp = temp.reshape(self.Nx, -1)
-      self.b_dense += np.moveaxis(temp, -1, 0)
-
     ind_rem = [None] * self.d_param
     ind_quot = [None] * self.d_param
 
@@ -729,23 +711,8 @@ class als_cross:
       ['n_PDE_eval']
       )
 
-  # def get_u_dense(self):
-  #   u_dense = np.ones((1,1))
-  #   for i in reversed(range(self.d_param)):
-  #     u_dense = np.tensordot(self.u[i].reshape(self.ru[i], -1, self.ru[i+1]), u_dense, 1)
-  #   u_dense = np.tensordot(self.U0, u_dense, 1)
-  #   u_dense = u_dense.reshape(self.Nx, -1)
-  #   u_dense = np.moveaxis(u_dense, -1, 0)
-    
-  #   return u_dense
-
   def iterate(self, nswp=1):
     for k in range(nswp):
-      if self.swp > 1:
-        u_dense = self.get_u_dense()
-        Au = np.matmul(self.A_dense, np.expand_dims(u_dense, 2)).squeeze()
-        energy_res = np.sum(u_dense * (Au - 2 * self.b_dense))
-        print(f'energy functional: {energy_res/u_dense.shape[0]:.4e}')
       # alternate forward/backward iteration
       if self.forward_is_next:
         tol_reached =  self.special_core()
@@ -759,12 +726,6 @@ class als_cross:
           # compute projections, rank adaption and more
           if i < self.d_param:
             self.step_forward(i)
-
-          if self.swp > 1:
-            u_dense = self.get_u_dense()
-            Au = np.matmul(self.A_dense, np.expand_dims(u_dense, 2)).squeeze()
-            energy_res = np.sum(u_dense * (Au - 2 * self.b_dense))
-            print(f'energy functional: {energy_res/u_dense.shape[0]:.4e}')
 
         if self.verbose > 0:
           print(f'= swp={self.swp} fwd finish, max_dx={self.max_dx:.3e}, max_rank = {max(self.ru)}')
@@ -780,12 +741,6 @@ class als_cross:
           self.solve_reduced_system(i)
           # compute projections, rank adaption and more
           self.step_backward(i)
-
-          if self.swp > 1:
-            u_dense = self.get_u_dense()
-            Au = np.matmul(self.A_dense, np.expand_dims(u_dense, 2)).squeeze()
-            energy_res = np.sum(u_dense * (Au - 2 * self.b_dense))
-            print(f'energy functional: {energy_res/u_dense.shape[0]:.4e}')
 
         self.Ju = np.empty((1, 0), dtype=np.int32)
         self.forward_is_next = True
