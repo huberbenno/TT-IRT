@@ -2,7 +2,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
-
+#include <complex.h>
 /*
  * Cross approximation with full pivoting
  */
@@ -15,8 +15,9 @@ char cR = 'R';
 char cU = 'U';
 double done = 1.0;
 double dzero = 0.0;
+double complex cone = 1.0 +0.0*I;
 
-// lapack functions
+// double lapack functions
 extern void dcopy_(int*, double*,int*,double*,int*);
 extern void dscal_(int*,double*,double*,int*);
 extern void dger_(int*,int*,double*,double*,int*,double*,int*,double*,int*);
@@ -24,6 +25,14 @@ extern void dgeqrf_(int*,int*,double*,int*,double*,double*,int*,int*);
 extern void dtrmm_(char*,char*,char*,char*,int*,int*,double*,double*,int*,double*,int*);
 extern void dorgqr_(int*,int*,int*,double*,int*,double*,double*,int*,int*);
 // extern void icopy_(int*,int*,int*,int*,int*);
+
+// complex lapack functions
+extern void ccopy_(int*, double complex*,int*,double complex*,int*);
+extern void csscal_(int*,double*,double complex*,int*);
+extern void cgeru_(int*,int*,double complex*,double complex*,int*,double complex*,int*,double complex*,int*);
+extern void cgeqrf_(int*,int*,double complex*,int*,double complex*,double complex*,int*,int*);
+extern void ctrmm_(char*,char*,char*,char*,int*,int*,double complex*,double complex*,int*,double complex*,int*);
+extern void cungqr_(int*,int*,int*,double complex*,int*,double complex*,double complex*,int*,int*);
 
 //! \brief clone of lapack icopy 
 // (somehow not in my lapack library)
@@ -73,7 +82,7 @@ void icopy_(int* N,int* SX,int* INCX,int* SY,int* INCY){
  *
  * Print the n x m matrix mat.
 */
-void print_matrix_colmajor(char* desc, int n, int m, double* mat)
+void dprint_matrix_colmajor(char* desc, int n, int m, double* mat)
 {
   int i,j;
   printf("\n %s [%i x %i]\n", desc, n, m);
@@ -81,6 +90,22 @@ void print_matrix_colmajor(char* desc, int n, int m, double* mat)
   {
     for(j=0;j<m;++j)
       printf(" %6.3f", mat[i+j*n]);
+    printf("\n");
+  }
+}
+
+/*! \brief Clone of print_matrix_colmajor from lapacke.
+ *
+ * Print the n x m matrix mat.
+*/
+void cprint_matrix_colmajor(char* desc, int n, int m, double complex* mat)
+{
+  int i,j;
+  printf("\n %s [%i x %i]\n", desc, n, m);
+  for(i=0;i<n;++i)
+  {
+    for(j=0;j<m;++j)
+      printf(" %6.3f + %6.3fj", creal(mat[i+j*n]), cimag(mat[i+j*n]));
     printf("\n");
   }
 }
@@ -94,10 +119,10 @@ void print_matrix_colmajor(char* desc, int n, int m, double* mat)
  * @param tol tolerance
  * @param u pointer to array u in F order
  * @param vt pointer to transposed array vt in F order
- * @param I pointer to index array
+ * @param Ind pointer to index array
  * @param rank rank of the decomposition
 */
-void localcross_f64(double* Y, int n, int m, double tol, double* u, double* vt, double* I, int* rank)
+void localcross_f64(double* Y, int n, int m, double tol, double* u, double* vt, double* Ind, int* rank)
 {
   double *work, val_max, val;
   int minsz, sz, r, piv1, piv2, i;
@@ -128,7 +153,7 @@ void localcross_f64(double* Y, int n, int m, double tol, double* u, double* vt, 
     piv1 = piv2 % n;
     piv2 = piv2 / n;
     // update index array
-    I[r] = (double) piv1;
+    Ind[r] = (double) piv1;
     // update u and v
     dcopy_(&n, &Y[piv2*n], &ione, &u[r*n], &ione);
     dcopy_(&m, &Y[piv1], &n, &vt[r*m], &ione);
@@ -144,7 +169,7 @@ void localcross_f64(double* Y, int n, int m, double tol, double* u, double* vt, 
     r=1;
     memset(u, 0, sizeof(double)*n);
     memset(vt, 0, sizeof(double)*m);
-    I[0] = 1.;
+    Ind[0] = 1.;
   }
   else {
     // QR u
@@ -175,10 +200,86 @@ void localcross_f64(double* Y, int n, int m, double tol, double* u, double* vt, 
   // dcopy_(&sz, vt, &ione, *V, &ione);
   // for (i=0; i<r; i++) dcopy_(&m, &vt[i*m], &ione, &(*V)[i], &r);
     
-  // *I = (double *)malloc(sizeof(double)*r);
-  // dcopy_(&r, ind, &ione, *I, &ione);
+  // *Ind = (double *)malloc(sizeof(double)*r);
+  // dcopy_(&r, ind, &ione, *Ind, &ione);
 
   // free(u);
   // free(vt);
   // free(ind);
+}
+
+/*! \brief Compute localcross (complex version)
+ *
+ * @param Y input of size n*m (will be overwritten)
+ * @param n number of rows of Y
+ * @param m number of columns of Y
+ * @param tol tolerance
+ * @param u pointer to array u in F order
+ * @param vt pointer to transposed array vt in F order
+ * @param Ind pointer to index array
+ * @param rank rank of the decomposition
+*/
+void localcross_c128(double complex* Y, int n, int m, double tol, double complex* u, double complex* vt, double* Ind, int* rank)
+{
+  double complex *work, cval;
+  double val_max, val;
+  int minsz, sz, r, piv1, piv2, i;
+
+  minsz = (m<n) ? m : n;
+
+  sz = n*m;
+
+  // find max norm element value of Y
+  val_max = 0.0;
+  for (i=0; i<sz; i++)
+    if (cabs(Y[i])>val_max)
+      val_max = cabs(Y[i]);
+
+  // Main loop 
+  for (r=0; r<minsz; r++) {
+    // Find the max norm element of Y
+    val=0.0;
+    for (i=0; i<sz; i++)
+      if (cabs(Y[i])>val){
+        piv2 = i;
+        val = cabs(Y[piv2]);
+      }
+
+    if (val<=tol*val_max) break;
+
+    // compute index
+    piv1 = piv2 % n;
+    piv2 = piv2 / n;
+    // update index array
+    Ind[r] = (double) piv1;
+    // update u and v
+    ccopy_(&n, &Y[piv2*n], &ione, &u[r*n], &ione);
+    ccopy_(&m, &Y[piv1], &n, &vt[r*m], &ione);
+    // scale column of vt by pivot 
+    val = 1.0 / Y[piv1+piv2*n];
+    csscal_(&m,&val,&vt[r*m],&ione);
+    // compute Y = Y - u(:,r)*v(r,:)
+    cval = -cone;
+    cgeru_(&n, &m, &cval, &u[r*n], &ione, &vt[r*m],&ione, Y, &n);
+  }
+  if (r==0) {
+    // There was a zero matrix
+    r=1;
+    memset(u, 0, sizeof(double complex)*n);
+    memset(vt, 0, sizeof(double complex)*m);
+    Ind[0] = 1.;
+  }
+  else {
+    // QR u
+    sz = -1;
+    cgeqrf_(&n, &r, u, &n, &Y[1], &Y[0], &sz, &i);
+    sz = (int)Y[0];
+    work = (double complex*) malloc(sizeof(double complex)*sz);
+    cgeqrf_(&n, &r, u, &n, Y, work, &sz, &i);
+    ctrmm_(&cR, &cU, &cT, &cN, &m, &r, &cone, u, &n, vt, &m);
+    cungqr_(&n, &r, &r, u, &n, Y, work, &sz, &i);
+    free(work);
+  }
+
+  *rank = r;
 }

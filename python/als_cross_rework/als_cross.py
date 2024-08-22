@@ -4,7 +4,7 @@ import warnings
 from time import perf_counter
 from scipy.sparse import csr_matrix, issparse
 
-from localcross import localcross
+from .localcross import localcross
 
 
 class als_cross:
@@ -205,7 +205,7 @@ class als_cross:
     if self.kickrank > 0: # TODO and (random_init==0 or swp>1)
       self.prof.start('t_amen')
       # compute residual at Z indices
-      self.Z0 = np.zeros((self.Nx, self.rz[0]))
+      self.Z0 = np.zeros((self.Nx, self.rz[0]), dtype=self.ScalarType)
       for k in range(self.M_A):
         cru = self.U0 @ v @ self.ZU[k][0]
         for j in range(self.rz[0]):
@@ -284,16 +284,15 @@ class als_cross:
       crA[k] = crA[k].reshape(self.rc_A[k][i-1], -1)
 
     # compute RHS projection
-    crF = np.zeros((self.ru[i-1], self.n_param[i-1] * self.ru[i]))
+    crF = np.zeros((self.ru[i-1], self.n_param[i-1] * self.ru[i]), dtype=self.ScalarType)
     for k in range(self.M_b):
       crb = self.b_cores[k][i-1].reshape(-1, self.rc_b[k][i]) @ self.Ub[k][i]
       crF += self.UF[k][i-1] @ crb.reshape(self.rc_b[k][i-1], -1)
-
     # assemble and solve blocks
     # TODO significant speedup (especially for small ranks) available
-    cru = np.empty((self.ru[i-1], self.n_param[i-1] * self.ru[i]))
+    cru = np.empty((self.ru[i-1], self.n_param[i-1] * self.ru[i]), dtype=self.ScalarType)
     for j in range(self.n_param[i-1] * self.ru[i]):
-      Ai = np.zeros(self.ru[i-1] * self.ru[i-1])
+      Ai = np.zeros(self.ru[i-1] * self.ru[i-1], dtype=self.ScalarType)
       for k in range(self.M_A):
         Ai += self.UAU[k][i-1].reshape(-1, self.rc_A[k][i-1]) @ crA[k][:,j]
 
@@ -314,14 +313,14 @@ class als_cross:
     """
     Update right interface projections.
     """
-    UAU_new = np.zeros((self.ru[i], self.ru[i] * self.rc_A[k][i]))
+    UAU_new = np.zeros((self.ru[i], self.ru[i] * self.rc_A[k][i]), dtype=self.ScalarType)
 
     UAU = self.UAU[k][i-1].reshape(self.ru[i-1], -1)
     crC = np.transpose(self.A_cores[k][i-1], (0,2,1))
     cru = np.transpose(self.u[i-1], (0,2,1))
     for j in range(self.n_param[i-1]):
-      v = np.conjugate(cru[:,:,j].T)
-      crA = v @ UAU
+      v = cru[:,:,j].T
+      crA = np.conjugate(v) @ UAU
       crA = crA.reshape(-1, self.rc_A[k][i-1]) @ crC[:,:,j]
       crA = crA.reshape(self.ru[i], -1).T.reshape(self.ru[i-1], -1)
       crA = v @ crA
@@ -339,8 +338,8 @@ class als_cross:
     # Rank adaption
     if self.kickrank > 0: # and (random_init==0 or swp>1)
       # compute residual
-      crz = np.zeros(((self.ru[i-1], self.n_param[i-1] * self.rz[i])))
-      crz_new = np.zeros((self.rz[i-1], self.n_param[i-1] * self.rz[i]))
+      crz = np.zeros(((self.ru[i-1], self.n_param[i-1] * self.rz[i])), dtype=self.ScalarType)
+      crz_new = np.zeros((self.rz[i-1], self.n_param[i-1] * self.rz[i]), dtype=self.ScalarType)
       for k in range(self.M_A):
         # solution interface at U indices
         U_prev = (cru @ rv @ self.ZU[k][i]).reshape(self.ru[i-1], -1)
@@ -408,12 +407,12 @@ class als_cross:
       # crz_new = np.transpose(crz_new, (0,2,1))
       for k in range(self.M_A):
         # matrix
-        self.ZU[k][i] = np.zeros((self.rz[i], self.ru[i] * self.rc_A[k][i]))
+        self.ZU[k][i] = np.zeros((self.rz[i], self.ru[i] * self.rc_A[k][i]), dtype=self.ScalarType)
         for j in range(self.n_param[i-1]):
           crA = np.conjugate(crz_new[:,j,:].T) @ self.ZU[k][i-1].reshape(self.rz[i-1], -1)
           crA = crA.reshape(-1, self.rc_A[k][i-1]) @ self.A_cores[k][i-1][:,j,:]
           crA = crA.reshape(self.rz[i], -1).T.reshape(self.ru[i-1],-1)
-          crA = np.conjugate(self.u[i-1][:,j,:].T) @ crA
+          crA = self.u[i-1][:,j,:].T @ crA
           self.ZU[k][i] += crA.reshape(-1, self.rz[i]).T
 
         # TODO do i need these
@@ -442,8 +441,8 @@ class als_cross:
     if self.kickrank > 0:
 
       U_prev = (rv @ cru).reshape(self.ru[i-1], -1)
-      crz = np.zeros((self.rz[i-1], self.n_param[i-1] * self.ru[i]))
-      crz_new = np.zeros((self.rz[i-1], self.n_param[i-1] * self.rz[i]))
+      crz = np.zeros((self.rz[i-1], self.n_param[i-1] * self.ru[i]), dtype=self.ScalarType)
+      crz_new = np.zeros((self.rz[i-1], self.n_param[i-1] * self.rz[i]), dtype=self.ScalarType)
       for k in range(self.M_A):
         crA = self.ZU[k][i-1].reshape(-1, self.rc_A[k][i-1])
         # compute residual
@@ -533,7 +532,7 @@ class als_cross:
       print(f'= swp={self.swp} core <{i}, dx={self.dx:.3e}, rank = [{self.ru[i-1]}, {self.ru[i]}]')
 
 
-  def __init__(self, A_params, b_params, assem_solve_fun, tol, **args):
+  def __init__(self, A_params, b_params, assem_solve_fun, tol, ScalarType=np.float64, **args):
     """
     Initialize ALS cross algorithm.
 
@@ -548,6 +547,7 @@ class als_cross:
     **args:
       optional named arguments described in `parse_args`
     """
+    self.ScalarType = ScalarType
 
     # store parameters
     self.A_params = A_params
