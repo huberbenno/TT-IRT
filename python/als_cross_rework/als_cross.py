@@ -4,7 +4,7 @@ import warnings
 from time import perf_counter
 from scipy.sparse import csr_matrix, issparse
 
-from localcross import localcross
+from .localcross import localcross
 
 
 class als_cross:

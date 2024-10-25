@@ -13,6 +13,14 @@ try:
     np.ctypeslib.ndpointer(dtype=np.float64, ndim=1),
     ct.POINTER(ct.c_int)
   )
+  _llc.localcross_c128.argtypes = (
+    np.ctypeslib.ndpointer(dtype=np.complex128, ndim=2),
+    ct.c_int, ct.c_int, ct.c_double,
+    np.ctypeslib.ndpointer(dtype=np.complex128, flags='F'),
+    np.ctypeslib.ndpointer(dtype=np.complex128, flags='C'),
+    np.ctypeslib.ndpointer(dtype=np.complex128, ndim=1),
+    ct.POINTER(ct.c_int)
+  )
   _have_llc = True
 except:
   pass
@@ -28,6 +36,8 @@ def localcross(Y,tol, return_indices=False, fast=True):
   :return: 
     if ``return_indices=True`` returns tuple u,v,I; else returns tuple u,v
   """
+  assert(Y.dtype == np.float64 or Y.dtype == np.complex128)
+
   if len(np.shape(Y)) == 2:
     n,m = np.shape(Y)
     b = 1
@@ -35,15 +45,18 @@ def localcross(Y,tol, return_indices=False, fast=True):
     n,m,b = np.shape(Y)
 
   minsize = min(n, m*b)
-  u = np.zeros((n,minsize), order='F', dtype=np.float64)
-  v = np.zeros((minsize, m*b), order='C', dtype=np.float64)
+  u = np.zeros((n,minsize), order='F', dtype=Y.dtype)
+  v = np.zeros((minsize, m*b), order='C', dtype=Y.dtype)
     
   I = np.zeros((minsize), dtype=np.float64) # also return indices
 
   if _have_llc and fast:
     Y_cp = Y.copy(order='F')
     r = ct.c_int(-1)
-    _llc.localcross_f64(Y_cp, n,m*b, tol, u, v, I,r)
+    if Y.dtype is np.float64:
+      _llc.localcross_f64(Y_cp, n,m*b, tol, u, v, I,r)
+    else:
+      _llc.localcross_c128(Y_cp, n,m*b, tol, u, v, I,r)
 
     u = u[:, :r.value]
     v = v[:r.value, :]
@@ -79,4 +92,3 @@ def localcross(Y,tol, return_indices=False, fast=True):
     return u,v,I
   else:
     return u,v
-  
