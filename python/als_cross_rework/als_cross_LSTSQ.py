@@ -242,16 +242,21 @@ class als_cross_lstsq:
 
     Uprev = self.U0 # TODO technically dont need to copy here
 
-    for k in range(self.M_A):
-      UAUk_new = [None] * self.rc_A[k][0]
-      for j in range(self.rc_A[k][0]):
-        UAUk_new[j] = np.conjugate(Uprev.T) @ self.A0[k][j] @ Uprev
-        UAUk_new[j] = UAUk_new[j].reshape(-1,1)
+    for k in range(self.M_AtA):
+      k1, k2 = k, k % self.M_A
+      UAtAUk_new = [None] * self.rc_AtA[k][0]
+      for j in range(self.rc_AtA[k][0]):
+        j1, j2 = j, j % self.rc_A[k1][0]
+        UAtAUk_new[j] = np.conjugate(Uprev.T) @ self.A0[k1][j1].T @ self.A0[k2][j2] @ Uprev
+        UAtAUk_new[j] = UAtAUk_new[j].reshape(-1,1)
 
-      self.UAU[k][0] = np.hstack(UAUk_new)
+      self.UAtAU[k][0] = np.hstack(UAtAUk_new)
     
-    for k in range(self.M_b):
-      self.UF[k][0] = (np.conjugate(Uprev.T) @ self.F0[k])
+    for k in range(self.M_Atb):
+      k1, k2 = k , k % self.M_A
+      for j in range(self.rc_Atb[k][0]):
+        j1, j2 = j, j % self.rc_A[k1][0]
+        self.UF[k][0] = (np.conjugate(Uprev.T) @ self.A0[k1][j1].T @ self.F0[k2][j2])
 
     self.prof.stop('t_project')
 
@@ -278,10 +283,10 @@ class als_cross_lstsq:
     Solve (block diagonal) reduced systems.
     """
     # right hand interface projection
-    crA = [None] * self.M_A
-    for k in range(self.M_A):
-      crA[k] = self.A_cores[k][i-1].reshape(-1, self.rc_A[k][i]) @ self.UA[k][i]
-      crA[k] = crA[k].reshape(self.rc_A[k][i-1], -1)
+    crAtA = [None] * self.M_AtA
+    for k in range(self.M_AtA):
+      crAtA[k] = self.A_cores[k][i-1].reshape(-1, self.rc_A[k][i]) @ self.UA[k][i]
+      crAtA[k] = crAtA[k].reshape(self.rc_AtA[k][i-1], -1)
 
     # compute RHS projection
     crF = np.zeros((self.ru[i-1], self.n_param[i-1] * self.ru[i]), dtype=self.ScalarType)
@@ -565,63 +570,70 @@ class als_cross_lstsq:
     self.n_param = self.A_params[0].n[1:]     # parametric grid sizes
     self.d_param = self.A_params[0].d - 1     # parameter dimension
     # for matrix A
-    rc_A = [p.r[1:] for p in A_params]     # TT ranks of the parameters
-    M_A = len(self.A_params)               # number of parameter TTs
-    Rc_A = [p.r[0] for p in A_params]      # components per param TT
+    self.rc_A = [p.r[1:] for p in A_params]     # TT ranks of the parameters
+    self.M_A = len(self.A_params)               # number of parameter TTs
+    self.Rc_A = [p.r[0] for p in A_params]      # components per param TT
     # for RHS b
-    rc_b = [p.r[1:] for p in b_params]     # TT ranks of the parameters
-    M_b = len(self.b_params)               # number of parameter TTs
-    Rc_b = [p.r[0] for p in b_params]      # components per param TT
+    self.rc_b = [p.r[1:] for p in b_params]     # TT ranks of the parameters
+    self.M_b = len(self.b_params)               # number of parameter TTs
+    self.Rc_b = [p.r[0] for p in b_params]      # components per param TT
     # other 
     self.ru = None                # TT ranks of the solution
     self.rz = None                # TT ranks of the residual
     self.Nx = None
 
     # orthogonalize parameter TT
-    A_cores = [None] * M_A
-    A_core = [None] * M_A
+    self.A_cores = [None] * self.M_A
+    self.A_core = [None] * self.M_A
     for k, param in enumerate(self.A_params):
       # keep maxvol indices of first param TT
       if k == 0:
-        A_core[k], A_cores[k], rc_A[k], indices = \
+        self.A_core[k], self.A_cores[k], self.rc_A[k], indices = \
           self.orthogonalize_tensor(tt.vector.to_list(param))
       else:
-        A_core[k], A_cores[k], rc_A[k] = \
+        self.A_core[k], self.A_cores[k], self.rc_A[k] = \
           self.orthogonalize_tensor(tt.vector.to_list(param), return_indices=False)
     
-
-    b_cores = [None] * M_b
-    b_core = [None] * M_b
+    self.b_cores = [None] * self.M_b
+    self.b_core = [None] * self.M_b
     for k, param in enumerate(self.b_params):
-      b_core[k], b_cores[k], rc_b[k] = \
+      self.b_core[k], self.b_cores[k], self.rc_b[k] = \
         self.orthogonalize_tensor(tt.vector.to_list(param), return_indices=False)
 
     # init matrix and rhs variables
-    self.A0 = assem_solve_fun.matrix(A_core)
-    self.F0 = [np.hstack(F0k) for F0k in assem_solve_fun.rhs(b_core)]
+    # self.A0 = assem_solve_fun.matrix(self.A_core)
+    self. A0 = [np.stack(A0k, axis=-1) for A0k in assem_solve_fun.matrix(self.A_core)]
+    self.F0 = [np.hstack(F0k) for F0k in assem_solve_fun.rhs(self.b_core)]
+
+    self.Nx = self.A0[0].shape[1]
 
     # for A_t @ A
-    self.rc_A = []
-    self.Rc_A = []
-    for i in range(M_A):
-      for j in range(M_A):
-        self.rc_A.append(rc_A[i] * rc_A[j]) 
-        self.Rc_A.append(Rc_A[i] * Rc_A[j])
-    self.M_A = M_A * M_A    
-    self.A_cores = [None] * self.M_A
-    self.A_core = [None] * self.M_A
+    self.rc_AtA = []
+    # self.Rc_AtA = []
+    self.AtA0 = []
+    self.M_AtA = self.M_A * self.M_A    
+    # self.A_cores = []
+    # self.A_core = []
+    for i in range(self.M_A):
+      for j in range(self.M_A):
+        self.rc_A.append(self.rc_A[i] * self.rc_A[j]) 
+        # self.Rc_A.append(Rc_A[i] * Rc_A[j])
+        # self.AtA0.append(np.einsum('kis,kjt->ijst', self.A0[i], self.A0[j]).reshape((self.Nx, self.Nx, -1)))
+        # c_list = []
+        # for k in range(self.d_param):
+        #   c_list.append(np.einsum('mis,nit->mnist', A_cores[i], A_cores[j]).reshape(self.rc_A[i][k]*self.rc_A[j][k], self.n_param[k],-1))
+        # self.A_cores.append(c_list)
 
     # for A_t @ b
-    self.rc_b = []
-    self.Rc_b = []
-    for i in range(M_A):
-      for j in range(M_b):
-        self.rc_b.append(rc_A[i] * rc_b[j]) 
-        self.Rc_b.append(Rc_A[i] * Rc_b[j])
-    self.M_b = M_A * M_b  
-
-
-    self.Nx = self.A0[0][0].shape[1]
+    self.rc_Atb = []
+    # self.Rc_Atb = []
+    self.M_Atb = self.M_A * self.M_b  
+    for i in range(self.M_A):
+      for j in range(self.M_b):
+        self.rc_b.append(self.rc_A[i] * self.rc_b[j]) 
+    #     self.Rc_b.append(Rc_A[i] * Rc_b[j])
+    #     self.F0.append(np.einsum('kis,kt->ist', A0[i], F0[j]).rehsape((self.Nx, -1)))
+    
 
     ind_rem = [None] * self.d_param
     ind_quot = [None] * self.d_param
@@ -653,28 +665,62 @@ class als_cross_lstsq:
 
     # Init right samples of matrix and rhs param at indices Ju
     self.UA = [[np.ones((1,1))] for p in self.A_params]
-    for k in range(self.M_A):
+    self.UAtA = [[np.ones((1,1))] for k in range(self.M_AtA)]
+    for k1 in range(self.M_A):
       if self.random_init > 0:
         xi = np.ones((1, self.random_init))
       else:
         xi = np.ones((1, self.ru[-2]))
       for i in reversed(range(self.d_param)):
         xi = np.einsum('i...j,j...->i...',
-                       self.A_cores[k][i][:, ind_quot[i], :],
+                       self.A_cores[k1][i][:, ind_quot[i], :],
                        xi[:, ind_rem[i]])
-        self.UA[k] = [xi] + self.UA[k]
+        self.UA[k1] = [xi] + self.UA[k1]
+
+      for k2 in range(self.M_A):
+        k = k1 * self.M_A + k2
+        if self.random_init > 0:
+          xi = np.ones((1, self.random_init))
+        else:
+          xi = np.ones((1, self.ru[-2]))
+        for i in reversed(range(self.d_param)):
+          AitAi = np.einsum('mis,nit->mnist',
+                  self.A_cores[k1][i][:, ind_quot[i], :],
+                  self.A_cores[k2][i][:, ind_quot[i], :]
+                  ).reshape(self.rc_A[k1]*self.rc_A[k2], self.rz[i], -1)
+          xi = np.einsum('i...j,j...->i...',
+                        AitAi,
+                        xi[:, ind_rem[i]])
+          self.UAtA[k] = [xi] + self.UAtA[k]
 
     self.Ub = [[np.ones((1,1))] for p in self.b_params]
-    for k in range(self.M_b):
+    self.UAtb = [[np.ones((1,1))] for k in range(self.M_Atb)]
+    for k1 in range(self.M_b):
       if self.random_init > 0:
         xi = np.ones((1, self.random_init))
       else:
         xi = np.ones((1, self.ru[-2]))
       for i in reversed(range(self.d_param)):
         xi = np.einsum('i...j,j...->i...',
-                       self.b_cores[k][i][:, ind_quot[i], :],
+                       self.b_cores[k1][i][:, ind_quot[i], :],
                        xi[:, ind_rem[i]])
-        self.Ub[k] = [xi] + self.Ub[k]
+        self.Ub[k1] = [xi] + self.Ub[k1]
+
+      for k2 in range(self.M_A):
+        k = k1 * self.M_A + k2
+        if self.random_init > 0:
+          xi = np.ones((1, self.random_init))
+        else:
+          xi = np.ones((1, self.ru[-2]))
+        for i in reversed(range(self.d_param)):
+          Aitbi = np.einsum('mis,nit->mnist',
+                  self.A_cores[k1][i][:, ind_quot[i], :],
+                  self.b_cores[k2][i][:, ind_quot[i], :]
+                  ).reshape(self.rc_A[k1]*self.rc_b[k2], self.rz[i], -1)
+          xi = np.einsum('i...j,j...->i...',
+                        Aitbi,
+                        xi[:, ind_rem[i]])
+          self.UAtb[k] = [xi] + self.UAtb[k]
 
     # init residual
     if self.kickrank > 0:
@@ -696,14 +742,18 @@ class als_cross_lstsq:
           )
         ind_quot[i], ind_rem[i] = np.divmod(indices, self.rz[i+1])
 
-      for k in range(self.M_A):
+      for k in range(self.M_AtA):
+        k1, k2 = k, k % self.M_A
         xi = np.ones((1, self.rz[-2]))
         for i in reversed(range(self.d_param)):
           # no solution yet, intialize with random data
           self.ZU[k] = [self.rng.standard_normal((self.ru[i], self.rz[i]))] + self.ZU[k]
-          
+          AitAi = np.einsum('mis,nit->mnist',
+                            self.A_cores[k1][i][:, ind_quot[i], :],
+                            self.A_cores[k2][i][:, ind_quot[i], :]
+                            ).reshape(self.rc_A[k1]*self.rc_A[k2], self.rz[i], -1)
           xi = np.einsum('i...j,j...->i...',
-                          self.A_cores[k][i][:, ind_quot[i], :],
+                          AitAi,
                           xi[:, ind_rem[i]])
           self.ZA[k] = [xi] + self.ZA[k]
       
@@ -720,8 +770,8 @@ class als_cross_lstsq:
     self.u = [None] * self.d_param
 
     # init projection variables
-    self.UAU = [[None] * (self.d_param + 1) for k in range(self.M_A)]
-    self.UF = [[None] * (self.d_param + 1) for k in range(self.M_b)]
+    self.UAtAU = [[None] * (self.d_param + 1) for k in range(self.M_AtA)]
+    self.UAtF = [[None] * (self.d_param + 1) for k in range(self.M_Atb)]
 
     # init main loop flags and counters
     self.forward_is_next = True
