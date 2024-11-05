@@ -257,7 +257,7 @@ class als_cross_lstsq:
       UAtFk_new = [None] * self.rc_Atb[k][0]
       for j in range(self.rc_Atb[k][0]):
         j1, j2 = divmod(j, self.rc_b[k2][0])
-        UAtFk_new[j] = (np.conjugate(Uprev.T @ self.A0[k1][:,:,j1].T) @ self.F0[k2][:,j2])
+        UAtFk_new[j] = np.conjugate(Uprev.T @ self.A0[k1][:,:,j1].T) @ self.F0[k2][:,j2]
         UAtFk_new[j] = UAtFk_new[j].reshape(-1,1)
 
       self.UAtF[k][0] = np.hstack(UAtFk_new)
@@ -313,7 +313,7 @@ class als_cross_lstsq:
     cru = np.empty((self.ru[i-1], self.n_param[i-1] * self.ru[i]), dtype=self.ScalarType)
     for j in range(self.n_param[i-1] * self.ru[i]):
       Ai = np.zeros(self.ru[i-1] * self.ru[i-1], dtype=self.ScalarType)
-      for k in range(self.M_A):
+      for k in range(self.M_AtA):
         Ai += self.UAtAU[k][i-1].reshape(-1, self.rc_AtA[k][i-1]) @ crAtA[k][:,j]
 
       Ai = np.reshape(Ai, (self.ru[i-1], self.ru[i-1]))
@@ -651,31 +651,18 @@ class als_cross_lstsq:
 
     # for A_t @ A
     self.rc_AtA = []
-    # self.Rc_AtA = []
     self.AtA0 = []
     self.M_AtA = self.M_A * self.M_A    
-    # self.A_cores = []
-    # self.A_core = []
     for i in range(self.M_A):
       for j in range(self.M_A):
         self.rc_AtA.append(self.rc_A[i] * self.rc_A[j]) 
-        # self.Rc_A.append(Rc_A[i] * Rc_A[j])
-        # self.AtA0.append(np.einsum('kis,kjt->ijst', self.A0[i], self.A0[j]).reshape((self.Nx, self.Nx, -1)))
-        # c_list = []
-        # for k in range(self.d_param):
-        #   c_list.append(np.einsum('mis,nit->mnist', A_cores[i], A_cores[j]).reshape(self.rc_A[i][k]*self.rc_A[j][k], self.n_param[k],-1))
-        # self.A_cores.append(c_list)
 
     # for A_t @ b
     self.rc_Atb = []
-    # self.Rc_Atb = []
     self.M_Atb = self.M_A * self.M_b  
     for i in range(self.M_A):
       for j in range(self.M_b):
         self.rc_Atb.append(self.rc_A[i] * self.rc_b[j]) 
-    #     self.Rc_b.append(Rc_A[i] * Rc_b[j])
-    #     self.F0.append(np.einsum('kis,kt->ist', A0[i], F0[j]).rehsape((self.Nx, -1)))
-    
 
     ind_rem = [None] * self.d_param
     ind_quot = [None] * self.d_param
