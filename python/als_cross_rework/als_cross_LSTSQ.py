@@ -210,23 +210,28 @@ class als_cross_lstsq:
         k1, k2 = divmod(k, self.M_A)
         cru = self.U0 @ v @ self.ZU[k][0]
         for j in range(self.rz[0]):
-          if issparse(self.A0[k][0]):
+          if issparse(self.A0[k1][0]) or issparse(self.A0[k2][0]):
             crAtA = csr_matrix((self.Nx, self.Nx))
           else:
             crAtA = np.zeros((self.Nx, self.Nx))
           for l in range(self.rc_AtA[k][0]):
-            l1, l2 = divmod(l, self.rc_A[k][0])
+            l1, l2 = divmod(l, self.rc_A[k2][0])
             crAtA += \
-              (np.conjugate(self.self.A0[k1][:,:,l1].T) @ self.self.A0[k2][:,:,l2]) \
+              (np.conjugate(self.A0[k1][:,:,l1].T) @ self.A0[k2][:,:,l2]) \
               * self.ZAtA[k][0][l,j]
 
           self.Z0[:,j] += np.ravel(crAtA @ cru[:,j])
 
       for k in range(self.M_Atb):
         k1, k2 = np.divmod(k, self.M_b)
-        for j in range(self.rc_Atb[k][0]):
-          j1, j2 = divmod(j, self.rc_b[k2][0])
-          self.Z0 -= np.conjugate(self.A0[k1][:,:,j1].T) @ self.F0[k2][:,j2] @ self.Zb[k][0]
+        crAtb = np.einsum('ims,it->mst',
+                             np.conjugate(self.A0[k1]),
+                             self.F0[k2]
+                             ).reshape((self.Nx, -1))
+        self.Z0 -= crAtb @ self.ZAtb[k][0]
+        # for j in range(self.rc_Atb[k][0]):
+        #   j1, j2 = divmod(j, self.rc_b[k2][0])
+        #   self.Z0 -= np.conjugate(self.A0[k1][:,:,j1].T) @ self.F0[k2][:,j2] @ self.ZAtb[k][0][j]
 
       # QR residual
       self.Z0 = np.linalg.qr(self.Z0)[0]
@@ -286,12 +291,18 @@ class als_cross_lstsq:
       
       for k in range(self.M_Atb):
         k1, k2 = divmod(k, self.M_b)
-        ZAtb_new = [None] * self.rc_Atb[k][0]
-        for j in range(self.rc_Atb[k][0]):
-          j1, j2 = divmod(j, self.rc_b[k2][0])
-          ZAtb_new[k][0] = np.conjugate(self.Z0.T) @ np.conjugate(self.A0[k1][:,:,j1]) @ self.F0[k1][:,j2]
+        self.ZAtb[k][0] = np.einsum('ims,it->mst',
+                             np.conjugate(self.A0[k1]),
+                             self.F0[k2]
+                             ).reshape((self.Nx, -1))
+        self.ZAtb[k][0] = np.conjugate(self.Z0.T) @ self.ZAtb[k][0]
+        # ZAtb_new = [None] * self.rc_Atb[k][0]
+        # for j in range(self.rc_Atb[k][0]):
+        #   j1, j2 = divmod(j, self.rc_b[k2][0])
+        #   print(ZAtb_new[j])
+        #   ZAtb_new[j] = np.conjugate(self.Z0.T) @ np.conjugate(self.A0[k1][:,:,j1]) @ self.F0[k2][:,j2]
 
-        self.ZAtb[k][0] = np.hstack(ZAtb_new)
+        # self.ZAtb[k][0] = np.hstack(ZAtb_new)
       
       self.prof.stop('t_amen')
 
@@ -411,10 +422,10 @@ class als_cross_lstsq:
                               self.b_cores[k2][i-1]
                               ).reshape(-1, self.rc_Atb[k][i])
         crAtb = Atb_core @ self.ZAtb[k][i]
-        crAtb = crAtb.reshape(self.rc_b[k][i-1], -1)
+        crAtb = crAtb.reshape(self.rc_Atb[k][i-1], -1)
 
-        crz_new -= self.Zb[k][i-1] @ crAtb
-        crz -= self.UF[k][i-1] @ crAtb
+        crz_new -= self.ZAtb[k][i-1] @ crAtb
+        crz -= self.UAtF[k][i-1] @ crAtb
 
       # enrich by combining solution and residual
       cru = np.hstack((cru, crz.reshape(-1, self.rz[i])))
@@ -520,14 +531,14 @@ class als_cross_lstsq:
                               np.conjugate(self.A_cores[k1][i-1]),
                               self.A_cores[k2][i-1]
                               ).reshape(-1, self.rc_AtA[k][i])
-        crC = AtA_core @ self.UA[k][i]
-        crC = crC.reshape(self.rc_A[k][i-1], -1)
+        crC = AtA_core @ self.UAtA[k][i]
+        crC = crC.reshape(self.rc_AtA[k][i-1], -1)
         for j in range(self.n_param[i-1] * self.ru[i]):
           Ai = (crAtA @ crC[:,j]).reshape(-1, self.ru[i-1])
           crz[:,j] += Ai @ U_prev[:,j]
 
         # update residual
-        crC = AtA_core @ self.ZA[k][i]
+        crC = AtA_core @ self.ZAtA[k][i]
         crC = crC.reshape(self.rc_AtA[k][i-1], -1)
         UZ = U_prev.reshape(-1, self.ru[i]) @ self.ZU[k][i]
         UZ = UZ.reshape(self.ru[i-1], -1)
@@ -541,12 +552,12 @@ class als_cross_lstsq:
                               np.conjugate(self.A_cores[k1][i-1]),
                               self.b_cores[k2][i-1]
                               ).reshape(-1, self.rc_Atb[k][i])
-        crC = Atb_core @ self.Ub[k][i]
-        crC = crC.reshape(self.rc_b[k][i-1], -1)
+        crC = Atb_core @ self.UAtb[k][i]
+        crC = crC.reshape(self.rc_Atb[k][i-1], -1)
         crz -= self.ZAtb[k][i-1] @ crC
 
         crC = Atb_core @ self.ZAtb[k][i]
-        crC = crC.reshape(self.rc_b[k][i-1], -1)
+        crC = crC.reshape(self.rc_Atb[k][i-1], -1)
         crz_new -= self.ZAtb[k][i-1] @ crC
 
       # enrichment
@@ -626,7 +637,7 @@ class als_cross_lstsq:
         self.ZU[k][i-1] = self.u[i-1].reshape(-1, self.ru[i]) @ self.ZU[k][i]
         self.ZU[k][i-1] = self.ZU[k][i-1].reshape(self.ru[i-1], -1)[:, ind]
       
-      for k in range(self.M_b):
+      for k in range(self.M_Atb):
         k1, k2 = divmod(k, self.M_b)
         Atb_core = np.einsum('mis,nit->mnist',
                               np.conjugate(self.A_cores[k1][i-1]),
@@ -634,7 +645,7 @@ class als_cross_lstsq:
                               ).reshape(-1, self.rc_Atb[k][i])
         # sample C at Z indices
         self.ZAtb[k][i-1] = Atb_core @ self.ZAtb[k][i]
-        self.ZAtb[k][i-1] = self.ZAtb[k][i-1].reshape(self.rc_b[k][i-1], -1)[:, ind]
+        self.ZAtb[k][i-1] = self.ZAtb[k][i-1].reshape(self.rc_Atb[k][i-1], -1)[:, ind]
       
       self.prof.stop('t_amen')
 
@@ -779,7 +790,7 @@ class als_cross_lstsq:
           AitAi = np.einsum('mis,nit->mnist',
                   self.A_cores[k1][i][:, ind_quot[i], :],
                   self.A_cores[k2][i][:, ind_quot[i], :]
-                  ).reshape(self.rc_A[k1][i]*self.rc_A[k2][i], -1, self.rc_A[k1][i+1]*self.rc_A[k2][i+1])
+                  ).reshape(self.rc_AtA[k][i], -1, self.rc_AtA[k][i+1])
           xi = np.einsum('i...j,j...->i...',
                         AitAi,
                         xi[:, ind_rem[i]])
@@ -808,7 +819,7 @@ class als_cross_lstsq:
           Aitbi = np.einsum('mis,nit->mnist',
                   self.A_cores[k1][i][:, ind_quot[i], :],
                   self.b_cores[k2][i][:, ind_quot[i], :]
-                  ).reshape(self.rc_A[k1][i]*self.rc_b[k2][i], -1, self.rc_A[k1][i+1]*self.rc_b[k2][i+1])
+                  ).reshape(self.rc_Atb[k][i], -1, self.rc_Atb[k][i+1])
           xi = np.einsum('i...j,j...->i...',
                         Aitbi,
                         xi[:, ind_rem[i]])
@@ -843,7 +854,7 @@ class als_cross_lstsq:
           AtA_core = np.einsum('mis,nit->mnist',
                             self.A_cores[k1][i][:, ind_quot[i], :],
                             self.A_cores[k2][i][:, ind_quot[i], :]
-                            ).reshape(self.rc_AtA[k], self.rz[i], -1)
+                            ).reshape(self.rc_AtA[k][i], self.rz[i], -1)
           xi = np.einsum('i...j,j...->i...',
                           AtA_core,
                           xi[:, ind_rem[i]])
@@ -856,7 +867,7 @@ class als_cross_lstsq:
           Atb_core = np.einsum('mis,nit->mnist',
                             self.A_cores[k1][i][:, ind_quot[i], :],
                             self.b_cores[k2][i][:, ind_quot[i], :]
-                            ).reshape(self.rc_Atb[k], self.rz[i], -1)
+                            ).reshape(self.rc_Atb[k][i], self.rz[i], -1)
           xi = np.einsum('i...j,j...->i...',
                           Atb_core,
                           xi[:, ind_rem[i]])
