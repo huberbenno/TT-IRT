@@ -224,14 +224,15 @@ class als_cross_lstsq:
 
       for k in range(self.M_Atb):
         k1, k2 = np.divmod(k, self.M_b)
-        crAtb = np.einsum('ims,it->mst',
-                             np.conjugate(self.A0[k1]),
-                             self.F0[k2]
-                             ).reshape((self.Nx, -1))
-        self.Z0 -= crAtb @ self.ZAtb[k][0]
-        # for j in range(self.rc_Atb[k][0]):
-        #   j1, j2 = divmod(j, self.rc_b[k2][0])
-        #   self.Z0 -= np.conjugate(self.A0[k1][:,:,j1].T) @ self.F0[k2][:,j2] @ self.ZAtb[k][0][j]
+        # TODO check behaviour for sparse A0
+        # crAtb = np.einsum('ims,it->mst',
+        #                      np.conjugate(self.A0[k1]),
+        #                      self.F0[k2]
+        #                      ).reshape((self.Nx, -1))
+        # self.Z0 -= crAtb @ self.ZAtb[k][0]
+        for j in range(self.rc_Atb[k][0]):
+          j1, j2 = divmod(j, self.rc_b[k2][0])
+          self.Z0 -= np.outer(np.conjugate(self.A0[k1][:,:,j1].T) @ self.F0[k2][:,j2], self.ZAtb[k][0][j])
 
       # QR residual
       self.Z0 = np.linalg.qr(self.Z0)[0]
@@ -291,18 +292,19 @@ class als_cross_lstsq:
       
       for k in range(self.M_Atb):
         k1, k2 = divmod(k, self.M_b)
-        self.ZAtb[k][0] = np.einsum('ims,it->mst',
-                             np.conjugate(self.A0[k1]),
-                             self.F0[k2]
-                             ).reshape((self.Nx, -1))
-        self.ZAtb[k][0] = np.conjugate(self.Z0.T) @ self.ZAtb[k][0]
-        # ZAtb_new = [None] * self.rc_Atb[k][0]
-        # for j in range(self.rc_Atb[k][0]):
-        #   j1, j2 = divmod(j, self.rc_b[k2][0])
-        #   print(ZAtb_new[j])
-        #   ZAtb_new[j] = np.conjugate(self.Z0.T) @ np.conjugate(self.A0[k1][:,:,j1]) @ self.F0[k2][:,j2]
+        # TODO sparse behaviour
+        # self.ZAtb[k][0] = np.einsum('ims,it->mst',
+        #                      np.conjugate(self.A0[k1]),
+        #                      self.F0[k2]
+        #                      ).reshape((self.Nx, -1))
+        # self.ZAtb[k][0] = np.conjugate(self.Z0.T) @ self.ZAtb[k][0]
+        ZAtb_new = [None] * self.rc_Atb[k][0]
+        for j in range(self.rc_Atb[k][0]):
+          j1, j2 = divmod(j, self.rc_b[k2][0])
+          ZAtb_new[j] = np.conjugate(self.Z0.T) @ np.conjugate(self.A0[k1][:,:,j1]) @ self.F0[k2][:,j2]
+          ZAtb_new[j] = ZAtb_new[j].reshape(-1,1)
 
-        # self.ZAtb[k][0] = np.hstack(ZAtb_new)
+        self.ZAtb[k][0] = np.hstack(ZAtb_new)
       
       self.prof.stop('t_amen')
 
