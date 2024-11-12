@@ -217,22 +217,16 @@ class als_cross_lstsq:
           for l in range(self.rc_AtA[k][0]):
             l1, l2 = divmod(l, self.rc_A[k2][0])
             crAtA += \
-              (np.conjugate(self.A0[k1][:,:,l1].T) @ self.A0[k2][:,:,l2]) \
+              (self.A0[k1][l1].conj().T @ self.A0[k2][l2]) \
               * self.ZAtA[k][0][l,j]
 
           self.Z0[:,j] += np.ravel(crAtA @ cru[:,j])
 
       for k in range(self.M_Atb):
         k1, k2 = np.divmod(k, self.M_b)
-        # TODO check behaviour for sparse A0
-        # crAtb = np.einsum('ims,it->mst',
-        #                      np.conjugate(self.A0[k1]),
-        #                      self.F0[k2]
-        #                      ).reshape((self.Nx, -1))
-        # self.Z0 -= crAtb @ self.ZAtb[k][0]
         for j in range(self.rc_Atb[k][0]):
           j1, j2 = divmod(j, self.rc_b[k2][0])
-          self.Z0 -= np.outer(np.conjugate(self.A0[k1][:,:,j1].T) @ self.F0[k2][:,j2], self.ZAtb[k][0][j])
+          self.Z0 -= np.outer(self.A0[k1][j1].conj().T @ self.F0[k2][j2], self.ZAtb[k][0][j])
 
       # QR residual
       self.Z0 = np.linalg.qr(self.Z0)[0]
@@ -246,7 +240,6 @@ class als_cross_lstsq:
         self.u[0] = v[:,:self.ru[0]] @ self.u[0].reshape(self.ru[0], -1)
 
       self.ru[0] = self.U0.shape[1]
-
       self.prof.stop('t_amen')
 
     # TODO evaluate if loop for projection are necessary
@@ -260,17 +253,17 @@ class als_cross_lstsq:
       UAtAUk_new = [None] * self.rc_AtA[k][0]
       for j in range(self.rc_AtA[k][0]):
         j1, j2 = divmod(j, self.rc_A[k2][0])
-        UAtAUk_new[j] = np.conjugate(Uprev.T @ self.A0[k1][:,:,j1].T) @ self.A0[k2][:,:,j2] @ Uprev
+        UAtAUk_new[j] = np.conjugate(Uprev.T @ self.A0[k1][j1].T) @ self.A0[k2][j2] @ Uprev
         UAtAUk_new[j] = UAtAUk_new[j].reshape(-1,1)
 
       self.UAtAU[k][0] = np.hstack(UAtAUk_new)
-    
+
     for k in range(self.M_Atb):
       k1, k2 = divmod(k, self.M_b)
       UAtFk_new = [None] * self.rc_Atb[k][0]
       for j in range(self.rc_Atb[k][0]):
         j1, j2 = divmod(j, self.rc_b[k2][0])
-        UAtFk_new[j] = np.conjugate(Uprev.T @ self.A0[k1][:,:,j1].T) @ self.F0[k2][:,j2]
+        UAtFk_new[j] = np.conjugate(Uprev.T @ self.A0[k1][j1].T) @ self.F0[k2][j2]
         UAtFk_new[j] = UAtFk_new[j].reshape(-1,1)
 
       self.UAtF[k][0] = np.hstack(UAtFk_new)
@@ -285,27 +278,20 @@ class als_cross_lstsq:
         ZU_new = [None] * self.rc_AtA[k][0]
         for j in range(self.rc_AtA[k][0]):
           j1, j2 = divmod(j, self.rc_A[k2][0])
-          ZU_new[j] = np.conjugate(self.Z0.T) @ np.conjugate(self.A0[k1][:,:,j1]) @ self.A0[k2][:,:,j2] @ Uprev
+          ZU_new[j] = np.conjugate(self.Z0.T @ self.A0[k1][j1].T) @ self.A0[k2][j2] @ Uprev
           ZU_new[j] = ZU_new[j].reshape(-1,1)
 
         self.ZU[k][0] = np.hstack(ZU_new)
-      
+
       for k in range(self.M_Atb):
         k1, k2 = divmod(k, self.M_b)
-        # TODO sparse behaviour
-        # self.ZAtb[k][0] = np.einsum('ims,it->mst',
-        #                      np.conjugate(self.A0[k1]),
-        #                      self.F0[k2]
-        #                      ).reshape((self.Nx, -1))
-        # self.ZAtb[k][0] = np.conjugate(self.Z0.T) @ self.ZAtb[k][0]
         ZAtb_new = [None] * self.rc_Atb[k][0]
         for j in range(self.rc_Atb[k][0]):
           j1, j2 = divmod(j, self.rc_b[k2][0])
-          ZAtb_new[j] = np.conjugate(self.Z0.T) @ np.conjugate(self.A0[k1][:,:,j1]) @ self.F0[k2][:,j2]
+          ZAtb_new[j] = np.conjugate(self.Z0.T @ self.A0[k1][j1].T) @ self.F0[k2][j2]
           ZAtb_new[j] = ZAtb_new[j].reshape(-1,1)
 
         self.ZAtb[k][0] = np.hstack(ZAtb_new)
-      
       self.prof.stop('t_amen')
 
     return False
@@ -464,18 +450,11 @@ class als_cross_lstsq:
     # Projections with the residual
     if self.kickrank > 0:
       self.prof.start('t_amen')
-      # TODO
-      # if random_init>0 and swp==1:
-      #       crz_new = rng.standard_normal((rz[i-1] * ny[i-1], rz[i]))
       # orthogonalize residual core
       crz_new = np.linalg.qr(crz_new)[0]
       self.rz[i] = crz_new.shape[1]
       crz_new = crz_new.reshape((self.rz[i-1], self.n_param[i-1], self.rz[i]))
 
-      # TODO verify just changing the slicing works
-      # crC = np.transpose(self.c_cores[i-1], (0,2,1))
-      # cru = np.transpose(self.u[i-1], (0,2,1))
-      # crz_new = np.transpose(crz_new, (0,2,1))
       for k in range(self.M_AtA):
         k1, k2 = divmod(k, self.M_A)
         # matrix
@@ -490,11 +469,6 @@ class als_cross_lstsq:
           crAtA = self.u[i-1][:,j,:].T @ crAtA
           self.ZU[k][i] += crAtA.reshape(-1, self.rz[i]).T
 
-        # TODO do i need these
-        # self.ZA[k][i] = self.ZA[k][i-1] @ self.A_cores[k][i-1].reshape(self.rc_A[k][i-1], -1)
-        # self.ZA[k][i] = self.ZA[k][i].reshape(-1, self.rc_A[k][i])
-        # self.ZA[k][i] = np.conjugate(crz_new.reshape(-1, self.rz[i]).T) @ self.ZA[k][i]
-
       for k in range(self.M_Atb):
         k1, k2 = divmod(k, self.M_b)
         # RHS
@@ -505,7 +479,6 @@ class als_cross_lstsq:
         self.ZAtb[k][i] = self.ZAtb[k][i-1] @ Atb_core
         self.ZAtb[k][i] = self.ZAtb[k][i].reshape(-1, self.rc_Atb[k][i])
         self.ZAtb[k][i] = np.conjugate(crz_new.reshape(-1, self.rz[i]).T) @ self.ZAtb[k][i]
-      
       self.prof.stop('t_amen')
 
     if self.verbose > 0:
@@ -638,7 +611,7 @@ class als_cross_lstsq:
         # sample U at Z indices
         self.ZU[k][i-1] = self.u[i-1].reshape(-1, self.ru[i]) @ self.ZU[k][i]
         self.ZU[k][i-1] = self.ZU[k][i-1].reshape(self.ru[i-1], -1)[:, ind]
-      
+
       for k in range(self.M_Atb):
         k1, k2 = divmod(k, self.M_b)
         Atb_core = np.einsum('mis,nit->mnist',
@@ -648,7 +621,7 @@ class als_cross_lstsq:
         # sample C at Z indices
         self.ZAtb[k][i-1] = Atb_core @ self.ZAtb[k][i]
         self.ZAtb[k][i-1] = self.ZAtb[k][i-1].reshape(self.rc_Atb[k][i-1], -1)[:, ind]
-      
+
       self.prof.stop('t_amen')
 
     if self.verbose > 0:
@@ -695,7 +668,7 @@ class als_cross_lstsq:
     self.rc_b = [p.r[1:] for p in b_params]     # TT ranks of the parameters
     self.M_b = len(self.b_params)               # number of parameter TTs
     self.Rc_b = [p.r[0] for p in b_params]      # components per param TT
-    # other 
+    # other
     self.ru = None                # TT ranks of the solution
     self.rz = None                # TT ranks of the residual
     self.Nx = None
@@ -711,7 +684,7 @@ class als_cross_lstsq:
       else:
         self.A_core[k], self.A_cores[k], self.rc_A[k] = \
           self.orthogonalize_tensor(tt.vector.to_list(param), return_indices=False)
-    
+
     self.b_cores = [None] * self.M_b
     self.b_core = [None] * self.M_b
     for k, param in enumerate(self.b_params):
@@ -719,26 +692,26 @@ class als_cross_lstsq:
         self.orthogonalize_tensor(tt.vector.to_list(param), return_indices=False)
 
     # init matrix and rhs variables
-    # self.A0 = assem_solve_fun.matrix(self.A_core)
-    self.A0 = [np.stack(A0k, axis=-1) for A0k in assem_solve_fun.matrix(self.A_core)]
-    self.F0 = [np.hstack(F0k) for F0k in assem_solve_fun.rhs(self.b_core)]
+    self.A0 = assem_solve_fun.matrix(self.A_core)
+    # self.A0 = [np.stack(A0k, axis=-1) for A0k in assem_solve_fun.matrix(self.A_core)]
+    self.F0 = assem_solve_fun.rhs(self.b_core)
 
-    self.Nx = self.A0[0].shape[1]
+    self.Nx = self.A0[0][0].shape[1]
 
     # for A_t @ A
     self.rc_AtA = []
-    self.AtA0 = []
-    self.M_AtA = self.M_A * self.M_A    
+    # self.AtA0 = []
+    self.M_AtA = self.M_A * self.M_A
     for i in range(self.M_A):
       for j in range(self.M_A):
-        self.rc_AtA.append(self.rc_A[i] * self.rc_A[j]) 
+        self.rc_AtA.append(self.rc_A[i] * self.rc_A[j])
 
     # for A_t @ b
     self.rc_Atb = []
-    self.M_Atb = self.M_A * self.M_b  
+    self.M_Atb = self.M_A * self.M_b
     for i in range(self.M_A):
       for j in range(self.M_b):
-        self.rc_Atb.append(self.rc_A[i] * self.rc_b[j]) 
+        self.rc_Atb.append(self.rc_A[i] * self.rc_b[j])
 
     ind_rem = [None] * self.d_param
     ind_quot = [None] * self.d_param
@@ -861,7 +834,7 @@ class als_cross_lstsq:
                           AtA_core,
                           xi[:, ind_rem[i]])
           self.ZAtA[k] = [xi] + self.ZAtA[k]
-      
+
       for k in range(self.M_Atb):
         k1, k2 = divmod(k, self.M_b)
         xi = np.ones((1, self.rz[-2]))
@@ -891,7 +864,7 @@ class als_cross_lstsq:
 
     # init profiler
     self.prof = self.profiler(
-      ['t_solve', 't_project', 't_amen'], 
+      ['t_solve', 't_project', 't_amen'],
       ['n_PDE_eval']
       )
 
