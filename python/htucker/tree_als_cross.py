@@ -159,33 +159,40 @@ class TreeALSCross:
 
         # update left interface projections
         for k in range(self.M_A):
-          UAU = self.UAU[special]
-
+          UAU = self.UAU[k][special]
           cru = self.u.cores[root]
           cru = np.moveaxis(cru.squeeze(-1), 0, -1)
-          cru = np.moveaxis(cru, child_ind, -1)
-          for s in child.siblings:
-            if s.child_ind == 0: continue
-            cru = np.tensordot(self.UA[k][s], cru, axes=(-1, 0))
           crC = self.A_params[k].cores[root]
           crC = np.moveaxis(crC.squeeze(-1), 0, -1)
-          crC = np.moveaxis(crC, child_ind, -1)
 
-          UAU = np.einsum('...ab,...cd,...ef,ace->bdf', np.conjugate(cru), cru, crC, UAU, optimize=True)
-          self.UAU[k][root] = UAU
+          ind_offset = root.n_children - 1
+          tmp = np.tensordot(cru, UAU, axes=(-1,1))
+          tmp = np.tensordot(np.conjugate(cru), tmp, axes=(-1,-2))
+          tmp = np.tensordot(tmp, crC, axes=(-1,-1))
+          for s in child.siblings:
+            if s.child_ind == 0: continue
+            tmp = np.tensordot(tmp, self.UAU[k][s], axes=((0, ind_offset, 2*ind_offset),(0,1,2)))
+            ind_offset -= 1
 
+          self.UAU[k][root] = tmp
 
-          # update RHS projection interfaces
-          for k in range(self.M_b):
-            UF = self.UF[special]
-            cru = self.u.cores[root]
-            cru = np.moveaxis(cru, child_ind, -1)
-            crC = self.b_params[k].cores[root]
-            crC = np.moveaxis(cru, child_ind, -1)
+        # update RHS projection interfaces
+        for k in range(self.M_b):
+          UF = self.UF[k][special]
+          cru = self.u.cores[root]
+          cru = np.moveaxis(cru, child_ind, -1)
+          crC = self.b_params[k].cores[root]
+          crC = np.moveaxis(cru, child_ind, -1)
 
-            UF = np.einsum('a...b,  ac')
-            UFik = self.UF[k][i-1] @ self.b_cores[k][i-1].reshape(self.rc_b[k][i-1], -1)
-            self.UF[k][i] = np.conjugate(cru.T) @ UFik.reshape(-1, self.rc_b[k][i])
+          ind_offset = root.n_children - 1
+          tmp = np.tensordot(np.concatenate(cru), UAU, axes=(-1,0))
+          tmp = np.tensordot(tmp, crC, axes=(-1,-1))
+          for s in child.siblings:
+            if s.child_ind == 0: continue
+            tmp = np.tensordot(tmp, self.UF[k][s], axes=((0, ind_offset),(0,1)))
+            ind_offset -= 1
+
+          self.UF[k][root] = tmp
 
       #### Rest of the tree
       
