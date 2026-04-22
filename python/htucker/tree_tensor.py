@@ -30,7 +30,7 @@ class TreeBasedTensor:
     Number of dimensions of the tensor. Same as len(shape) and self.tree.order.
     """
     return len(self.shape)
-  
+
   @property
   def size(self):
     """
@@ -105,7 +105,7 @@ class TreeBasedTensor:
         cores += [rng.standard_normal(node.n_children * (rank,) + (rank,))]
 
     return TreeBasedTensor(cores, tree)
-  
+
   @staticmethod
   def ones(tree: Tree, shape) -> TreeBasedTensor:
     """
@@ -120,7 +120,7 @@ class TreeBasedTensor:
     """
     assert tree.order == len(shape), \
     f'Tree order must match shape ({tree.order} != {len(shape)}).'
-    
+
     cores = []
     for node in tree.node_list:
       if node.isleaf:
@@ -298,7 +298,7 @@ class TreeBasedTensor:
     worker_trunc(self.tree.root)
 
     return self
-  
+
   def _orth_subtree(self, node):
     core = self.cores[node]
     if node.isleaf:
@@ -316,7 +316,7 @@ class TreeBasedTensor:
       q,r = np.linalg.qr(core)
       self.cores[node] = q.reshape(old_shape)
       return r
-    
+
   def _orth_subtree_maxvol(self, node):
     indexset_list = NodeIndexedList(self.tree.n_nodes * [None])
     indexset_dims_list = NodeIndexedList(self.tree.n_nodes * [None])
@@ -361,7 +361,7 @@ class TreeBasedTensor:
           q, r = np.linalg.qr(core.reshape(-1, core.shape[-1]))
           ind, C = rect_maxvol(q, maxK=core.shape[-1])
           qmax = q[ind]
-          
+
           indexset_list[node] = indexset[ind]
           indexset_dims_list[node] = dims
           maxvol_ind_list[node] = ind
@@ -371,7 +371,7 @@ class TreeBasedTensor:
 
     r = worker(node)
 
-    return r, indexset_list, indexset_dims_list
+    return r, indexset_list, indexset_dims_list, maxvol_ind_list
 
 
   def print(self):

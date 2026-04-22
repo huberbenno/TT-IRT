@@ -6,10 +6,10 @@ from maxvolpy.maxvol import rect_maxvol, svd_cut
 
 class TreeALSCross:
   def __init__(
-      self, 
-      A_params: list[TreeBasedTensor], 
-      b_params: list[TreeBasedTensor], 
-      assem_solve_fun, 
+      self,
+      A_params: list[TreeBasedTensor],
+      b_params: list[TreeBasedTensor],
+      assem_solve_fun,
       use_indices=False
     ):
     # store parameters
@@ -17,16 +17,14 @@ class TreeALSCross:
     self.b_params = b_params
     self.assem_solve_fun = assem_solve_fun
 
+    self.verbose = True
+
     self.rng = np.random.default_rng()
 
-    # tree and shape must be the same for all parameters
+    # tree and shape must be the same for all parameters (except spatial dim)
     # currently not checked
     self.tree = A_params[0].tree
     self.shape = A_params[0].shape
-
-    self.root_node = self.tree.root
-    self.root_node.parent = special
-    self.root_node.children = tuple(self.root_node.children[1:])
 
     self.M_A = len(self.A_params)
     self.M_b = len(self.b_params)
@@ -37,10 +35,10 @@ class TreeALSCross:
         self.A_params[k], indexset_list, indexset_dims_list, maxvol_ind_list = self._orth_towards_0(A_param)
       else:
         self.A_params[k] = self._orth_towards_0(A_param, return_indices=False)
-        
+
     for k, b_param in enumerate(self.b_params):
       self.b_params[k] = self._orth_towards_0(b_param, return_indices=False)
-        
+
     # init matrix and rhs variables
     A0_cores = [A_param.cores[A_param.tree.dim2id(0)] for A_param in self.A_params]
     b0_cores = [b_param.cores[b_param.tree.dim2id(0)] for b_param in self.b_params]
@@ -57,8 +55,21 @@ class TreeALSCross:
     cores[self.tree.dim2leaf(0)] = np.zeros((self.Nx, cores[self.tree.dim2leaf(0)].shape[1]))
     self.u = TreeBasedTensor(cores, self.tree)
 
+    # modified root for more generic code
+    # special core must be leaf and first child of root
+    # self.root_node = self.tree.root
+    # self.root_node.parent = self.root_node.children[0]
+    # self.root_node.children = tuple(self.root_node.children[1:])
+    # self.u.cores[self.root_node] = np.squeeze(self.u.cores[self.root_node], axis=-1)
+    # for k in range(self.M_A):
+    #   self.A_params[k].cores[self.root_node] = np.squeeze(self.A_params[k].cores[self.root_node], axis=-1)
+    # for k in range(self.M_b):
+    #   self.b_params[k].cores[self.root_node] = np.squeeze(self.b_params[k].cores[self.root_node], axis=-1)
+
     # init UAU and UF
     self._init_right_projection()
+    if self.verbose:
+      print('Init finished')
 
   def run(self, n_iter=1, tol=1e-3, verbose=False):
     max_dx = 0
@@ -99,196 +110,196 @@ class TreeALSCross:
       for k in range(self.M_A):
         proj = []
         for j, A0_j in enumerate(self.A0[k]):
-         proj += [np.conjugate(U0) @ A0_j @ U0]
-      
+         proj += [np.conjugate(U0.T) @ A0_j @ U0]
+
         self.UAU[k][special] = np.concatenate(proj, axis=-1)
-      
+
       for k in range(self.M_b):
         self.UF[k][special] = (np.conjugate(U0.T) @ self.F0[k])
 
-      self._als_leaf_worker(self.root_node)
+      self._als_leaf_worker(self.tree.root)
 
-    def _als_leaf_worker(self, node: TreeNode):
-      # compute RHS projection
-      crF = np.zeros(1)
-      for k in range(self.M_b):
-        tmp = self.b_params[k][node]     
-        crF += np.tensordot(tmp, self.UF[k][node.parent], axes=(0,-1))
+  def _als_leaf_worker(self, node: TreeNode):
+    # compute RHS projection
+    crF = np.zeros(1)
+    for k in range(self.M_b):
+      tmp = self.b_params[k][node]
+      crF += np.tensordot(tmp, self.UF[k][node.parent], axes=(0,-1))
 
-      # assemble and solve blocks
-      cru = []
-      for j in range(self.u.shape[node.id]):
-        Ai = np.zeros(1)
-        for k in range(self.M_A):
-          Ai += np.tensordot(self.UAU[k][node.parent], self.A_params[k][node][j], axes=(-1, 0))
-
-        cru += [np.linalg.solve(Ai, crF[j])]
-
-      cru = np.hstack(cru)
-
-      # check error
-      dx = np.linalg.norm(cru.flatten() - self.u.cores[node].flatten()) / np.linalg.norm(cru)
-
-      # update solution
-      self.u.cores[node] = cru.reshape(self.u.cores[node].shape)
-
-      # orth and truncate
-      core = self.u.cores[node]
-      old_shape = core.shape[:-1]
-      cru, s, v = svd_cut(core, tol=tol/np.sqrt(self.tree.order))
-
-      ind, C = rect_maxvol(cru, maxK=cru.shape[1])
-      qmax = cru[ind]
-
-      # update core
-      self.u.cores[node] = C.reshape(old_shape + (-1,))
-
-      # cast non-orth factor to parent
-      core = self.u.cores[node.parent]
-      core = np.tensordot(core, qmax @ np.diag(s) @ v, axes=(node.child_ind, -1))
-      self.u.cores[node.parent] = np.moveaxis(core, -1, node.child_ind)
-
-      # update right interface projection (sample param on U indices)
+    # assemble and solve blocks
+    cru = []
+    for j in range(self.u.shape[node.id]):
+      Ai = np.zeros(1)
       for k in range(self.M_A):
-        self.UA[k][node] = self.A_params[k][node][ind]
+        Ai += np.tensordot(self.UAU[k][node.parent], self.A_params[k][node][j], axes=(-1, 0))
 
-      for k in range(self.M_b):
-        self.Ub[k][node] = self.b_params[k][node][ind]
+      cru += [np.linalg.solve(Ai, crF[j])]
 
-      # update left interface projection
-      for k in range(self.M_A):
-        cru = self.u.cores[node]
-        crC = self.A_params[k].cores[node]
-        self.UAU[k][node] = np.einsum('ab,ac,ad->bcd', np.conjugate(cru), cru, crC)
+    cru = np.hstack(cru)
 
-      for k in range(self.M_b):
-        cru = self.u.cores[node]
-        crC = self.b_params[k].cores[node]
+    # check error
+    dx = np.linalg.norm(cru.flatten() - self.u.cores[node].flatten()) / np.linalg.norm(cru)
 
-        self.UF[k][node] = np.tensordot(cru, crC, axes=(0,0))
+    # update solution
+    self.u.cores[node] = cru.reshape(self.u.cores[node].shape)
 
-      return dx
-      
+    # orth and truncate
+    core = self.u.cores[node]
+    old_shape = core.shape[:-1]
+    cru, s, v = svd_cut(core, tol=tol/np.sqrt(self.tree.order))
 
-    def _als_interior_worker(self, node: TreeNode):
-      #### solve reduced system
-      dx = self._solve_reduced(node)
-      self.max_dx = max(max_dx, dx)
+    ind, C = rect_maxvol(cru, maxK=cru.shape[1])
+    qmax = cru[ind]
 
-      #### Iterate over children
-      for child_ind, child in enumerate(node.children):
+    # update core
+    self.u.cores[node] = C.reshape(old_shape + (-1,))
 
-        # orth and truncate solution core towards child
-        core = self.u.cores[node]
-        core = np.moveaxis(core, child_ind, -1)
-        old_shape = core.shape
-        core = core.reshape(-1, core.shape[-1])
-        cru,s,v = svd_cut(core, tol=tol/np.sqrt(self.tree.order))
-        
-        core = cru.reshape(old_shape[:-1] + (-1,))
-        self.u.cores[node] = np.moveaxis(core, -1, child_ind)
-        
-        # cast non orth factor to child
-        self.u.cores[child] = np.tensordot(self.u.cores[child], (np.diag(s) @ v), axes=(-1,-1))
+    # cast non-orth factor to parent
+    core = self.u.cores[node.parent]
+    core = np.tensordot(core, qmax @ np.diag(s) @ v, axes=(node.child_ind, -1))
+    self.u.cores[node.parent] = np.moveaxis(core, -1, node.child_ind)
 
-        # update interface projections
-        offset = node.n_children - 1
-        for k in range(self.M_A):
-          UAU = self.UAU[k][node.parent]
-          cru = self.u.cores[node]
-          cru = np.moveaxis(cru, child_ind, -2)
-          crC = self.A_params[k].cores[node]
-          crC = np.moveaxis(crC, child_ind, -2)
-          tmp = np.tensordot(cru, UAU, axes=(-1,1))
-          tmp = np.tensordot(np.conjugate(cru), tmp, axes=(-1,-2))
-          tmp = np.tensordot(tmp, crC, axes=(-1,-1))
-          for i, sib in enumerate(child.siblings):
-            tmp = np.tensordot(tmp, self.UAU[k][sib], axes=((0, (offset-i), 2*(offset-i)),(0,1,2)))
+    # update right interface projection (sample param on U indices)
+    for k in range(self.M_A):
+      self.UA[k][node] = self.A_params[k][node][ind]
 
-          self.UAU[k][node] = tmp
+    for k in range(self.M_b):
+      self.Ub[k][node] = self.b_params[k][node][ind]
 
-        for k in range(self.M_b):
-          UF = self.UF[k][node.parent]
-          cru = self.u.cores[node]
-          cru = np.moveaxis(cru, child_ind, -2)
-          crC = self.b_params[k].cores[node]
-          crC = np.moveaxis(crC, child_ind, -2)
-          tmp = np.tensordot(np.conjugate(cru), UF, axes=(-1,0))
-          tmp = np.tensordot(tmp, crC, axes=(-1,-1))
-          for i, sib in enumerate(child.siblings):
-            tmp = np.tensordot(tmp, self.UF[k][sib], axes=((0, offset-i),(0,1)))
+    # update left interface projection
+    for k in range(self.M_A):
+      cru = self.u.cores[node]
+      crC = self.A_params[k].cores[node]
+      self.UAU[k][node] = np.einsum('ab,ac,ad->bcd', np.conjugate(cru), cru, crC)
 
-          self.UF[k][node] = tmp
+    for k in range(self.M_b):
+      cru = self.u.cores[node]
+      crC = self.b_params[k].cores[node]
 
-        # go to child
-        if child.isleaf:
-          _als_leaf_worker(child)
-        else:
-          _als_interior_worker(child)
+      self.UF[k][node] = np.tensordot(cru, crC, axes=(0,0))
 
-      #### upwards move
-      # solve
-      dx = self._solve_reduced_system(node)
+    return dx
 
-      # orth and truncate towards parent
+
+  def _als_interior_worker(self, node: TreeNode):
+    #### solve reduced system
+    dx = self._solve_reduced(node)
+    self.max_dx = max(max_dx, dx)
+
+    #### Iterate over children
+    for child_ind, child in enumerate(node.children):
+
+      # orth and truncate solution core towards child
       core = self.u.cores[node]
+      core = np.moveaxis(core, child_ind, -1)
       old_shape = core.shape
-      core = core.reshape(-1, core.shape[0])
-      cru, s, v = svd_cut(core, tol=tol/np.sqrt(self.tree.order))
+      core = core.reshape(-1, core.shape[-1])
+      cru,s,v = svd_cut(core, tol=tol/np.sqrt(self.tree.order))
 
-      # maxvol
-      ind, C = rect_maxvol(cru, maxK=cru.shape[1])
-      qmax = cru[ind]
+      core = cru.reshape(old_shape[:-1] + (-1,))
+      self.u.cores[node] = np.moveaxis(core, -1, child_ind)
 
-      # update core
-      self.u.cores[node] = C.reshape(old_shape + (-1,))
+      # cast non orth factor to child
+      self.u.cores[child] = np.tensordot(self.u.cores[child], (np.diag(s) @ v), axes=(-1,-1))
 
-      # cast non-orth factor to parent
-      core = self.u.cores[node.parent]
-      core = np.tensordot(core, qmax @ np.diag(s) @ v, axes=(child_ind, -1))
-      self.u.cores[node.parent] = np.moveaxis(core, -1, child_ind)
-
-      # update right interface projection (sample param on U indices)
+      # update interface projections
+      offset = node.n_children - 1
       for k in range(self.M_A):
-        tmp = self.A_params[k][node]
-        for child in node.children:
-          tmp = np.tensordot(tmp, self.UA[k][child], axes=(0, -1))
-        
-        tmp = np.moveaxis(tmp, 0, -1)
-        tmp = tmp.reshape(-1, tmp.shape[-1])
-        self.UA[k][node] = tmp[ind]
-
-      for k in range(self.M_b):
-        tmp = self.b_params[k][node]
-        for child in node.children:
-          tmp = np.tensordot(tmp, self.Ub[k][child], axes=(0, -1))
-        
-        tmp = np.moveaxis(tmp, 0, -1)
-        tmp = tmp.reshape(-1, tmp.shape[-1])
-        self.Ub[k][node] = tmp[ind]
-
-      # update left interface projection
-      offset = node.n_children + 1
-      for k in range(self.M_A):
+        UAU = self.UAU[k][node.parent]
         cru = self.u.cores[node]
+        cru = np.moveaxis(cru, child_ind, -2)
         crC = self.A_params[k].cores[node]
-        tmp = np.tensordot(np.conjugate(cru), cru, axes=0)
-        tmp = np.tensordot(tmp, crC, axes=0)
-        for i, child in enumerate(node.children):
-          tmp = np.tensordot(tmp, self.UAU[k][child], axes=((0, (offset-i), 2*(offset-i)),(0,1,2)))
+        crC = np.moveaxis(crC, child_ind, -2)
+        tmp = np.tensordot(cru, UAU, axes=(-1,1))
+        tmp = np.tensordot(np.conjugate(cru), tmp, axes=(-1,-2))
+        tmp = np.tensordot(tmp, crC, axes=(-1,-1))
+        for i, sib in enumerate(child.siblings):
+          tmp = np.tensordot(tmp, self.UAU[k][sib], axes=((0, (offset-i), 2*(offset-i)),(0,1,2)))
 
         self.UAU[k][node] = tmp
 
       for k in range(self.M_b):
+        UF = self.UF[k][node.parent]
         cru = self.u.cores[node]
+        cru = np.moveaxis(cru, child_ind, -2)
         crC = self.b_params[k].cores[node]
-        tmp = np.tensordot(np.conjugate(cru), crC, axes=0)
-        for i, s in enumerate(node.children):
-          tmp = np.tensordot(tmp, self.UF[k][s], axes=((0, offset-i),(0,1)))
+        crC = np.moveaxis(crC, child_ind, -2)
+        tmp = np.tensordot(np.conjugate(cru), UF, axes=(-1,0))
+        tmp = np.tensordot(tmp, crC, axes=(-1,-1))
+        for i, sib in enumerate(child.siblings):
+          tmp = np.tensordot(tmp, self.UF[k][sib], axes=((0, offset-i),(0,1)))
 
         self.UF[k][node] = tmp
 
-      # TODO update index set
+      # go to child
+      if child.isleaf:
+        _als_leaf_worker(child)
+      else:
+        _als_interior_worker(child)
+
+    #### upwards move
+    # solve
+    dx = self._solve_reduced_system(node)
+
+    # orth and truncate towards parent
+    core = self.u.cores[node]
+    old_shape = core.shape
+    core = core.reshape(-1, core.shape[0])
+    cru, s, v = svd_cut(core, tol=tol/np.sqrt(self.tree.order))
+
+    # maxvol
+    ind, C = rect_maxvol(cru, maxK=cru.shape[1])
+    qmax = cru[ind]
+
+    # update core
+    self.u.cores[node] = C.reshape(old_shape + (-1,))
+
+    # cast non-orth factor to parent
+    core = self.u.cores[node.parent]
+    core = np.tensordot(core, qmax @ np.diag(s) @ v, axes=(child_ind, -1))
+    self.u.cores[node.parent] = np.moveaxis(core, -1, child_ind)
+
+    # update right interface projection (sample param on U indices)
+    for k in range(self.M_A):
+      tmp = self.A_params[k][node]
+      for child in node.children:
+        tmp = np.tensordot(tmp, self.UA[k][child], axes=(0, -1))
+
+      tmp = np.moveaxis(tmp, 0, -1)
+      tmp = tmp.reshape(-1, tmp.shape[-1])
+      self.UA[k][node] = tmp[ind]
+
+    for k in range(self.M_b):
+      tmp = self.b_params[k][node]
+      for child in node.children:
+        tmp = np.tensordot(tmp, self.Ub[k][child], axes=(0, -1))
+
+      tmp = np.moveaxis(tmp, 0, -1)
+      tmp = tmp.reshape(-1, tmp.shape[-1])
+      self.Ub[k][node] = tmp[ind]
+
+    # update left interface projection
+    offset = node.n_children + 1
+    for k in range(self.M_A):
+      cru = self.u.cores[node]
+      crC = self.A_params[k].cores[node]
+      tmp = np.tensordot(np.conjugate(cru), cru, axes=0)
+      tmp = np.tensordot(tmp, crC, axes=0)
+      for i, child in enumerate(node.children):
+        tmp = np.tensordot(tmp, self.UAU[k][child], axes=((0, (offset-i), 2*(offset-i)),(0,1,2)))
+
+      self.UAU[k][node] = tmp
+
+    for k in range(self.M_b):
+      cru = self.u.cores[node]
+      crC = self.b_params[k].cores[node]
+      tmp = np.tensordot(np.conjugate(cru), crC, axes=0)
+      for i, s in enumerate(node.children):
+        tmp = np.tensordot(tmp, self.UF[k][s], axes=((0, offset-i),(0,1)))
+
+      self.UF[k][node] = tmp
+
+    # TODO update index set (for index based assem_solve_fun)
 
 
   def _solve_reduced(self, node:TreeNode):
@@ -297,7 +308,7 @@ class TreeALSCross:
       tmp = self.A_params[k][node]
       for child in node.children:
         tmp = np.tensordot(tmp, self.UA[k][child], (0,-1))
-      
+
       crA[k] = tmp.reshape(-1, tmp.shape[-1])
 
     # compute RHS projection
@@ -306,7 +317,7 @@ class TreeALSCross:
       tmp = self.b_params[k][node]
       for child in node.children:
         tmp = np.tensordot(tmp, self.Ub[k][child], (0,-1))
-      
+
       crF += np.tensordot(tmp, self.UF[k][node.parent], axes=(0,-1))
 
     crF = crF.reshape(-1, crF.shape[-1])
@@ -329,11 +340,11 @@ class TreeALSCross:
     self.u.cores[node] = cru.reshape(self.u.cores[node].shape)
 
     return dx
-  
+
 
   def _init_right_projection(self):
-    self.UAU = NodeIndexedList(self.tree.n_nodes * [None])
-    self.UF = NodeIndexedList(self.tree.n_nodes * [None])
+    self.UAU = [NodeIndexedList(self.tree.n_nodes * [None]) for k in range(self.M_A)]
+    self.UF = [NodeIndexedList(self.tree.n_nodes * [None]) for k in range(self.M_b)]
 
     def worker(node):
       if node.isleaf:
@@ -347,26 +358,59 @@ class TreeALSCross:
           crC = self.b_params[k].cores[node]
 
           self.UF[k][node] = np.tensordot(cru, crC, axes=(0,0))
+
       else:
-        offset = node.n_children + 1
+        cru = self.u.cores[node]
+
+        if not node.isroot:
+          children_local = node.children
+        # special setup for root - proj towards first child
+        else:
+          children_local = node.children[1:]
+          cru = np.moveaxis(cru.squeeze(-1), 0,-1)
+
+        cru_conj = np.conj(cru)
+
+        # recurse to children
+        for i, child in enumerate(children_local):
+          worker(child)
+
+        # Matrix projections
         for k in range(self.M_A):
-          cru = self.u.cores[node]
           crC = self.A_params[k].cores[node]
-          tmp = np.tensordot(np.conjugate(cru), cru, axes=0)
-          tmp = np.tensordot(tmp, crC, axes=0)
-          for i, child in enumerate(node.children):
-            tmp = np.tensordot(tmp, self.UAU[k][child], axes=((0, (offset-i), 2*(offset-i)),(0,1,2)))
+          if node.isroot:
+            crC = np.moveaxis(crC.squeeze(-1), 0,-1)
 
-          self.UAU[k][node] = tmp
+          # build args list for einsum
+          ind_end = 3*(len(children_local)+1)
+          einsum_args = [
+            cru, np.arange(0, ind_end, 3),
+            cru_conj, np.arange(1, ind_end, 3),
+            crC, np.arange(2, ind_end, 3)
+            ]
+          for i, child in enumerate(children_local):
+            einsum_args += [self.UAU[k][child], np.arange(3*i, 3*(i+1))]
 
+          einsum_args += [np.arange(ind_end - 3, ind_end)]
+          self.UAU[k][node] = np.einsum(*einsum_args, optimize=True)
+
+        # RHS projections
         for k in range(self.M_b):
-          cru = self.u.cores[node]
           crC = self.b_params[k].cores[node]
-          tmp = np.tensordot(np.conjugate(cru), crC, axes=0)
-          for i, s in enumerate(node.children):
-            tmp = np.tensordot(tmp, self.UF[k][s], axes=((0, offset-i),(0,1)))
+          if node.isroot:
+            crC = np.moveaxis(crC.squeeze(-1), 0,-1)
 
-          self.UF[k][node] = tmp
+          ind_end = 2*(len(children_local)+1)
+          einsum_args = [
+            cru_conj, np.arange(0, ind_end, 2),
+            crC, np.arange(1, ind_end, 2)
+            ]
+          for i, child in enumerate(children_local):
+            einsum_args += [self.UF[k][child], np.arange(2*i, 2*(i+1))]
+
+          einsum_args += [np.arange(ind_end - 2, ind_end)]
+
+          self.UF[k][node] = np.einsum(*einsum_args, optimize=True)
 
     worker(self.tree.root)
 
@@ -383,15 +427,15 @@ class TreeALSCross:
         if node.isroot:
           # special case: towards 0 child
           tmp = tensor.cores[node].squeeze(-1)
-          for child in node.children[1:]:
+          for i, child in enumerate(node.children[1:]):
             worker(child)
-            tmp = np.tensordot(partial_evals[child], tmp, (-1,1))
+            tmp = np.tensordot(partial_evals[child], tmp, (-1,i+1))
         else:
           tmp = tensor.cores[node]
-          for child in node.children:
+          for i, child in enumerate(node.children):
             worker(child)
-            tmp = np.tensordot(partial_evals[child], tmp, (-1,0))
-          
+            tmp = np.tensordot(partial_evals[child], tmp, (-1,i))
+
         tmp = tmp.reshape(-1, tmp.shape[-1])
         partial_evals[node] = tmp[maxvol_ind_list[node]]
 
@@ -400,7 +444,7 @@ class TreeALSCross:
 
   @staticmethod
   def _orth_towards_0(tensor: TreeBasedTensor, return_indices = True):
-    
+
     # orth towards root
     _, indexset_list, indexset_dims_list, maxvol_ind_list = tensor._orth_subtree_maxvol(tensor.tree.root)
 
@@ -420,16 +464,16 @@ class TreeALSCross:
       # build indexset
       indexset, indexset_dims = np.zeros((1,0)), []
       for child in tensor.tree.root.children[1:]:
-        indexset_dims += indexset_dims_list[child]
+        indexset_dims = np.concatenate((indexset_dims, indexset_dims_list[child]))
         indexset = np.hstack(
-          np.repeat(indexset, repeats=indexset_list[child].shape[0], axis=0),
-          np.tile(indexset_list[child], reps=(indexset.shape[0], 1))
+          (np.repeat(indexset, repeats=indexset_list[child].shape[0], axis=0),
+          np.tile(indexset_list[child], reps=(indexset.shape[0], 1)))
         )
 
       # put the new indexset into root spot
-      # TODO reconsider 
+      # TODO reconsider
       indexset_list[tensor.tree.root] = indexset[ind]
-      indexset_dims_list[tensor.tree.root] = indexset_list
+      indexset_dims_list[tensor.tree.root] = indexset_dims
       maxvol_ind_list[tensor.tree.root] = ind
 
       return tensor, indexset_list, indexset_dims_list, maxvol_ind_list

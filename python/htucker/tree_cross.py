@@ -132,4 +132,4 @@ class TreeCross:
           )
 
   def _init(self):
-    _, self.indexset_list, self.indexset_dims_list = self.tensor._orth_subtree_maxvol(self.tensor.tree.root)
+    _, self.indexset_list, self.indexset_dims_list, _ = self.tensor._orth_subtree_maxvol(self.tensor.tree.root)
