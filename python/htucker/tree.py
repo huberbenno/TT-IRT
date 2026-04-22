@@ -81,7 +81,7 @@ class TreeNode:
   
   @property
   def child_ind(self) -> int:
-    if self.isroot():
+    if self.isroot:
       return None
     else:
       return self.parent.children.index(self)

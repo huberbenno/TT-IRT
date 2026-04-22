@@ -105,8 +105,8 @@ class TreeALSCross:
       U0, s,v = svd_cut(U0, tol/np.sqrt(self.tree.order))
       v = np.diag(s) @ v
       self.u.cores[special] = U0
-      # cast non-orth factor to next core
-      self.u.cores[self.tree.root] = np.tensordot(v, self.u.cores[self.tree.root], axes=(-1,0))
+      # cast non-orth factor to next core, which is root as child
+      self.u.cores[self.root_node] = np.tensordot(self.u.cores[self.tree.root], v, axes=(-1,-1))
 
       # projection onto solution basis U0
       for k in range(self.M_A):
@@ -161,7 +161,7 @@ class TreeALSCross:
           si = sibling.child_ind
           einsum_args += [self.UAU[k][sibling], np.arange(3*si, 3*(si+1))]
 
-        einsum_args += [self.UAU[k][node.parent], [ind_end-3, ind_end]]
+        einsum_args += [self.UAU[k][node.parent], np.arange(ind_end-3, ind_end)]
         einsum_args += [np.arange(3*child_ind, 3*(child_ind+1))]
         self.UAU[k][node] = np.einsum(*einsum_args, optimize=True)
 
@@ -177,7 +177,7 @@ class TreeALSCross:
         for sibling in child.siblings:
           einsum_args += [self.UF[k][sibling], np.arange(2*si, 2*(si+1))]
         
-        einsum_args += [self.UAU[k][node.parent], [ind_end-3, ind_end]]
+        einsum_args += [self.UF[k][node.parent], np.arange(ind_end-2, ind_end)]
         einsum_args += [np.arange(2*child_ind, 2*(child_ind+1))]
 
         self.UF[k][node] = np.einsum(*einsum_args, optimize=True)
@@ -334,13 +334,11 @@ class TreeALSCross:
     crA = [None] * self.M_A
     for k in range(self.M_A):
       tmp = self.A_params[k].cores[node]
-      print('start', tmp.shape)
       for child in node.children:
         tmp = np.tensordot(tmp, self.UA[k][child], (0,-1))
       
       tmp = np.moveaxis(tmp, 0, -1)
       crA[k] = tmp.reshape(-1, tmp.shape[-1])
-      print(crA[k].shape)
 
     # compute RHS projection
     crF = np.zeros(1)
