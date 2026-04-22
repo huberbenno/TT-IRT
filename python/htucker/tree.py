@@ -24,7 +24,7 @@ class NodeIndexedList(list):
 @dataclass
 class TreeNode:
   id : int = None
-  _children : tuple = tuple()
+  _children : tuple[int] = tuple()
   _parent : int = None
   tree : Tree = None
   dim : int = None
