@@ -108,7 +108,6 @@ class TreeALSCross:
       self.u.cores[special] = U0
       # cast non-orth factor to next core, which is root as child
       self.u.cores[self.root_node] = np.tensordot(self.u.cores[self.tree.root], v, axes=(-1,-1))
-      print('b', self.u.cores[self.root_node].shape)
 
       # projection onto solution basis U0
       for k in range(self.M_A):
@@ -140,7 +139,6 @@ class TreeALSCross:
 
       core = cru.reshape(old_shape[:-1] + (-1,))
       self.u.cores[node] = np.moveaxis(core, -1, child_ind)
-      print('a', node.id, self.u.cores[node].shape)
 
       # cast non orth factor to child
       self.u.cores[child] = np.tensordot(self.u.cores[child], (np.diag(s) @ v), axes=(-1,-1))
@@ -190,7 +188,6 @@ class TreeALSCross:
         self._als_leaf_worker(child)
       else:
         self._als_interior_worker(child)
-      print('status', node.id, self.u.cores[self.root_node].shape)
 
     #### upwards move
     # solve
@@ -198,7 +195,6 @@ class TreeALSCross:
 
     # orth and truncate towards parent
     core = self.u.cores[node]
-    print('c', node.id, core.shape)
     old_shape = core.shape
     core = core.reshape(-1, core.shape[-1])
     cru, s, v = svd_cut(core, tol=self.tol/np.sqrt(self.tree.order))
@@ -212,9 +208,14 @@ class TreeALSCross:
 
     # cast non-orth factor to parent
     core = self.u.cores[node.parent]
-    # TODO get rid of this hack
-    ci = node.child_ind if node != self.root_node else 1
-    print(node.id, core.shape, v.shape)
+    # TODO get rid of this hack, this stems from the tree modification
+    if node == self.root_node:
+      ci = 1
+    elif node.parent == self.root_node:
+      ci = node.child_ind - 1
+    else:
+      ci = node.child_ind
+
     core = np.tensordot(core, qmax @ np.diag(s) @ v, axes=(ci, -1))
     self.u.cores[node.parent] = np.moveaxis(core, -1, ci)
 
