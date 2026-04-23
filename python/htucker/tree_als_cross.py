@@ -43,6 +43,7 @@ class TreeALSCross:
     # modified root for more generic code
     # special core must be leaf and first child of root
     self.root_node = copy.copy(self.tree.root)
+    
     self.root_node.parent = self.root_node.children[0]
     self.root_node.children = tuple(self.root_node.children[1:])
     
@@ -62,8 +63,8 @@ class TreeALSCross:
     self.UA = [self._partial_evals(A_param, maxvol_ind_list) for A_param in self.A_params]
     self.Ub = [self._partial_evals(b_param, maxvol_ind_list) for b_param in self.b_params]
 
-    cores = NodeIndexedList([np.zeros_like(c) for c in self.A_params[0].cores])
-    cores[self.tree.dim2leaf(0)] = np.zeros((self.Nx, cores[self.tree.dim2leaf(0)].shape[1]))
+    cores = NodeIndexedList([self.rng.standard_normal(c.shape) for c in self.A_params[0].cores])
+    cores[self.tree.dim2leaf(0)] = self.rng.standard_normal((self.Nx, cores[self.tree.dim2leaf(0)].shape[1]))
     self.u = TreeBasedTensor(cores, self.tree)
     # self.u.cores[self.root_node] = np.squeeze(self.u.cores[self.root_node], axis=-1)
 
@@ -107,6 +108,7 @@ class TreeALSCross:
       self.u.cores[special] = U0
       # cast non-orth factor to next core, which is root as child
       self.u.cores[self.root_node] = np.tensordot(self.u.cores[self.tree.root], v, axes=(-1,-1))
+      print('b', self.u.cores[self.root_node].shape)
 
       # projection onto solution basis U0
       for k in range(self.M_A):
@@ -138,6 +140,7 @@ class TreeALSCross:
 
       core = cru.reshape(old_shape[:-1] + (-1,))
       self.u.cores[node] = np.moveaxis(core, -1, child_ind)
+      print('a', node.id, self.u.cores[node].shape)
 
       # cast non orth factor to child
       self.u.cores[child] = np.tensordot(self.u.cores[child], (np.diag(s) @ v), axes=(-1,-1))
@@ -187,15 +190,17 @@ class TreeALSCross:
         self._als_leaf_worker(child)
       else:
         self._als_interior_worker(child)
+      print('status', node.id, self.u.cores[self.root_node].shape)
 
     #### upwards move
     # solve
-    dx = self._solve_reduced_system(node)
+    dx = self._solve_reduced(node)
 
     # orth and truncate towards parent
     core = self.u.cores[node]
+    print('c', node.id, core.shape)
     old_shape = core.shape
-    core = core.reshape(-1, core.shape[0])
+    core = core.reshape(-1, core.shape[-1])
     cru, s, v = svd_cut(core, tol=self.tol/np.sqrt(self.tree.order))
 
     # maxvol
@@ -203,16 +208,19 @@ class TreeALSCross:
     qmax = cru[ind]
 
     # update core
-    self.u.cores[node] = C.reshape(old_shape + (-1,))
+    self.u.cores[node] = C.reshape(old_shape[:-1] + (-1,))
 
     # cast non-orth factor to parent
     core = self.u.cores[node.parent]
-    core = np.tensordot(core, qmax @ np.diag(s) @ v, axes=(child_ind, -1))
-    self.u.cores[node.parent] = np.moveaxis(core, -1, child_ind)
+    # TODO get rid of this hack
+    ci = node.child_ind if node != self.root_node else 1
+    print(node.id, core.shape, v.shape)
+    core = np.tensordot(core, qmax @ np.diag(s) @ v, axes=(ci, -1))
+    self.u.cores[node.parent] = np.moveaxis(core, -1, ci)
 
     # update right interface projection (sample param on U indices)
     for k in range(self.M_A):
-      tmp = self.A_params[k][node]
+      tmp = self.A_params[k].cores[node]
       for child in node.children:
         tmp = np.tensordot(tmp, self.UA[k][child], axes=(0, -1))
 
@@ -221,7 +229,7 @@ class TreeALSCross:
       self.UA[k][node] = tmp[ind]
 
     for k in range(self.M_b):
-      tmp = self.b_params[k][node]
+      tmp = self.b_params[k].cores[node]
       for child in node.children:
         tmp = np.tensordot(tmp, self.Ub[k][child], axes=(0, -1))
 
@@ -272,15 +280,16 @@ class TreeALSCross:
     # compute RHS projection
     crF = np.zeros(1)
     for k in range(self.M_b):
-      tmp = self.b_params[k].cores[node]
-      crF += np.tensordot(tmp, self.UF[k][node.parent], axes=(0,-1))
+      crC = self.b_params[k].cores[node]
+      crF = crF + np.tensordot(crC, self.UF[k][node.parent], axes=(1,-1))
 
     # assemble and solve blocks
     cru = []
-    for j in range(self.u.shape[node.id]):
+    for j in range(self.u.shape[node.dim]):
       Ai = np.zeros(1)
       for k in range(self.M_A):
-        Ai += np.tensordot(self.UAU[k][node.parent], self.A_params[k][node][j], axes=(-1, 0))
+        crC = self.A_params[k].cores[node]
+        Ai = Ai + np.tensordot(self.UAU[k][node.parent], crC[j], axes=(-1, 0))
 
       cru += [np.linalg.solve(Ai, crF[j])]
 
@@ -310,10 +319,10 @@ class TreeALSCross:
 
     # update right interface projection (sample param on U indices)
     for k in range(self.M_A):
-      self.UA[k][node] = self.A_params[k][node][ind]
+      self.UA[k][node] = self.A_params[k].cores[node][ind]
 
     for k in range(self.M_b):
-      self.Ub[k][node] = self.b_params[k][node][ind]
+      self.Ub[k][node] = self.b_params[k].cores[node][ind]
 
     # update left interface projection
     for k in range(self.M_A):
