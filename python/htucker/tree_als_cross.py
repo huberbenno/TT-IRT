@@ -11,7 +11,8 @@ class TreeALSCross:
       A_params: list[TreeBasedTensor],
       b_params: list[TreeBasedTensor],
       assem_solve_fun,
-      use_indices=False
+      use_indices=False,
+      rinit=0 
     ):
     # store parameters
     self.A_params = [copy.deepcopy(A_param) for A_param in A_params]
@@ -26,7 +27,7 @@ class TreeALSCross:
     # currently not checked
     self.tree = copy.deepcopy(A_params[0].tree)
     self.tree_mod = copy.deepcopy(A_params[0].tree)
-    self.shape = A_params[0].shape
+    self.shape = A_params[0].shape[1:]
 
     self.M_A = len(self.A_params)
     self.M_b = len(self.b_params)
@@ -58,15 +59,19 @@ class TreeALSCross:
     self.A0 = assem_solve_fun.matrix(A0_cores)
     self.F0 = [np.hstack(F0k) for F0k in assem_solve_fun.rhs(b0_cores)]
     self.Nx = self.A0[0][0].shape[1]
+  
+    if rinit > 0:
+      self.u = TreeBasedTensor.randn(tree=self.tree, shape=(self.Nx,) + self.shape, rank=rinit)
+      self.u, indexset_list, indexset_dims_list, maxvol_ind_list = self._orth_towards_0(self.u)
+      self.u.cores[self.root_node] = np.moveaxis(np.squeeze(self.u.cores[self.root_node], axis=-1), 0,-1)
+    else:
+      cores = NodeIndexedList([self.rng.standard_normal(c.shape) for c in self.A_params[0].cores])
+      cores[self.tree.dim2leaf(0)] = self.rng.standard_normal((self.Nx, cores[self.tree.dim2leaf(0)].shape[1]))
+      self.u = TreeBasedTensor(cores, self.tree)
 
     # init right proj UA and Ub (eval at maxvol)
     self.UA = [self._partial_evals(A_param, maxvol_ind_list) for A_param in self.A_params]
     self.Ub = [self._partial_evals(b_param, maxvol_ind_list) for b_param in self.b_params]
-
-    cores = NodeIndexedList([self.rng.standard_normal(c.shape) for c in self.A_params[0].cores])
-    cores[self.tree.dim2leaf(0)] = self.rng.standard_normal((self.Nx, cores[self.tree.dim2leaf(0)].shape[1]))
-    self.u = TreeBasedTensor(cores, self.tree)
-    # self.u.cores[self.root_node] = np.squeeze(self.u.cores[self.root_node], axis=-1)
 
     # init UAU and UF
     self._init_right_projection()
