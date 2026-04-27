@@ -14,8 +14,8 @@ class TreeALSCross:
       use_indices=False
     ):
     # store parameters
-    self.A_params = A_params
-    self.b_params = b_params
+    self.A_params = [copy.deepcopy(A_param) for A_param in A_params]
+    self.b_params = [copy.deepcopy(b_param) for b_param in b_params]
     self.assem_solve_fun = assem_solve_fun
 
     self.verbose = True
@@ -24,7 +24,8 @@ class TreeALSCross:
 
     # tree and shape must be the same for all parameters (except spatial dim)
     # currently not checked
-    self.tree = A_params[0].tree
+    self.tree = copy.deepcopy(A_params[0].tree)
+    self.tree_mod = copy.deepcopy(A_params[0].tree)
     self.shape = A_params[0].shape
 
     self.M_A = len(self.A_params)
@@ -42,8 +43,7 @@ class TreeALSCross:
 
     # modified root for more generic code
     # special core must be leaf and first child of root
-    self.root_node = copy.copy(self.tree.root)
-    
+    self.root_node = self.tree_mod.root
     self.root_node.parent = self.root_node.children[0]
     self.root_node.children = tuple(self.root_node.children[1:])
     
@@ -73,11 +73,13 @@ class TreeALSCross:
     if self.verbose:
       print('Init finished')
 
-  def run(self, n_iter=1, tol=1e-3, verbose=False):
+  def run(self, n_iter=1, tol=1e-3):
     self.tol = tol
     self.max_dx = 0
 
     for iteration in range(n_iter):
+      if self.verbose > 0:
+        print(f'= swp={iteration}')
       #### special core
       special = self.tree.root.children[0]
       U_prev = self.u.cores[special]
@@ -94,12 +96,11 @@ class TreeALSCross:
 
       dx = 1
       if U_prev is not None:
-        self.dx = np.linalg.norm(U0 - U_prev) / np.linalg.norm(U0)
+        dx = np.linalg.norm(U0 - U_prev) / np.linalg.norm(U0)
 
-      self.max_dx = max(self.max_dx, self.dx)
-
-      if verbose > 0:
-        print(f'= swp={iteration} core 0, max_dx={self.max_dx:.2e}')
+      self.max_dx = max(self.max_dx, dx)
+      if self.verbose > 0:
+        print(f'    node {special.id} (s)'.ljust(20), f'dx={dx:.2e}')
 
       # truncate U0
       # TODO maybe use cheaper option
@@ -122,10 +123,23 @@ class TreeALSCross:
 
       self._als_interior_worker(self.root_node)
 
+      if self.verbose > 0:
+        print(f'= swp={iteration} finished, max_dx={self.max_dx:.2e}')
+      self.max_dx = 0
+
+  def get_tensor(self):
+    tensor = TreeBasedTensor(self.u)
+    root_core = tensor.cores[tensor.tree.root]
+    root_core = np.expand_dims(np.moveaxis(root_core, -1, 0), -1)
+    tensor.cores[tensor.tree.root] = root_core
+    return tensor
+
   def _als_interior_worker(self, node: TreeNode):
     #### solve reduced system
     dx = self._solve_reduced(node)
     self.max_dx = max(self.max_dx, dx)
+    if self.verbose:
+      print(f'    node {node.id} down'.ljust(20), f'dx={dx:.2e}')
 
     #### Iterate over children
     for child_ind, child in enumerate(node.children):
@@ -192,6 +206,9 @@ class TreeALSCross:
     #### upwards move
     # solve
     dx = self._solve_reduced(node)
+    self.max_dx = max(self.max_dx, dx)
+    if self.verbose:
+      print(f'    node {node.id} up'.ljust(20), f'dx={dx:.2e}')
 
     # orth and truncate towards parent
     core = self.u.cores[node]
@@ -298,6 +315,9 @@ class TreeALSCross:
 
     # check error
     dx = np.linalg.norm(cru.flatten() - self.u.cores[node].flatten()) / np.linalg.norm(cru)
+    self.max_dx = max(self.max_dx, dx)
+    if self.verbose:
+      print(f'    node {node.id} leaf'.ljust(20), f'dx={dx:.2e}')
 
     # update solution
     self.u.cores[node] = cru.reshape(self.u.cores[node].shape)
@@ -314,9 +334,13 @@ class TreeALSCross:
     self.u.cores[node] = C.reshape(old_shape + (-1,))
 
     # cast non-orth factor to parent
+    if node.parent.id == self.root_node.id:
+      ci = node.child_ind - 1
+    else:
+      ci = node.child_ind
     core = self.u.cores[node.parent]
-    core = np.tensordot(core, qmax @ np.diag(s) @ v, axes=(node.child_ind, -1))
-    self.u.cores[node.parent] = np.moveaxis(core, -1, node.child_ind)
+    core = np.tensordot(core, qmax @ np.diag(s) @ v, axes=(ci, -1))
+    self.u.cores[node.parent] = np.moveaxis(core, -1, ci)
 
     # update right interface projection (sample param on U indices)
     for k in range(self.M_A):
