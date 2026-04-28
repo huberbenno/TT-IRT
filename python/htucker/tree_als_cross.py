@@ -81,7 +81,7 @@ class TreeALSCross:
     self._init_right_projection()
 
     if self.kickrank > 0:
-      pass
+      self._init_AMEn_data()
 
     if self.verbose > 0:
       print('Init finished')
@@ -127,7 +127,7 @@ class TreeALSCross:
       if self.kickrank > 0:
         # compute residual at indices
         for k in range(self.M_A):
-          cru = U0 @ v @ self.ZU[k][special]
+          cru = U0 @ v @ self.ZU[special]
           rz = self.ZA[k][special].shape[1]
           for l in range(rz):
             if issparse(self.A0[k][0]):
@@ -552,6 +552,7 @@ class TreeALSCross:
       crz_new = np.linalg.qr(crz_new)
       ind, C = rect_maxvol(crz_new, maxK=crz_new.shape[1])
 
+      offset = node.children+1
       einsum_args = [self.u.cores[node], np.arange(offset, 2*offset)]
       for ci, child in enumerate(node.children):
         einsum_args += [self.ZU[child], [ci, offset+ci]]
@@ -560,10 +561,9 @@ class TreeALSCross:
       ZU = np.einsum(*einsum_args, optimize=True)
       ZU = ZU.reshape(-1, ZU.shape[-1])
       self.ZU[node] = ZU[ind]
-      
+
       for k in range(self.M_A):
         crC = self.A_params[k].cores[node]
-        offset = node.children+1
         einsum_args = [crC, np.arange(offset, 2*offset)]
         for ci, child in enumerate(node.children):
           einsum_args += [self.ZA[k][child], [ci, offset+ci]]
@@ -573,11 +573,8 @@ class TreeALSCross:
         ZA = ZA.reshape(-1, ZA.shape[-1])
         self.ZA[k][node] = ZA[ind]
 
-
-
       for k in range(self.M_b):
         crC = self.b_params[k].cores[node]
-        offset = node.children+1
         einsum_args = [crC, np.arange(offset, 2*offset)]
         for ci, child in enumerate(node.children):
           einsum_args += [self.Zb[k][child], [ci, offset+ci]]
@@ -701,7 +698,6 @@ class TreeALSCross:
         self.Zb[k][node] = self.b_params[k][node][ind]
 
 
-
   def _solve_reduced(self, node:TreeNode):
     crA = [None] * self.M_A
     for k in range(self.M_A):
@@ -822,6 +818,80 @@ class TreeALSCross:
 
     worker(self.root_node)
     return partial_evals
+  
+  def _init_AMEn_data(self):
+    # no solution yet, fill random
+    self.ZUA = [NodeIndexedList(self.tree.n_nodes * [None]) for _ in self.A_params]
+    self.ZUb = [NodeIndexedList(self.tree.n_nodes * [None]) for _ in self.b_params]
+    # init at random indices
+    self.ZU = NodeIndexedList(self.tree.n_nodes * [None])
+    self.ZA = [NodeIndexedList(self.tree.n_nodes * [None]) for _ in self.A_params]
+    self.Zb = [NodeIndexedList(self.tree.n_nodes * [None]) for _ in self.b_params]
+
+    def worker(node):
+      if node.isleaf():
+        n, ru = self.u.cores[node]
+        ind = self.rng.choice(np.arange(n), self.kickrank, replace=True) #TODO replace=False?
+        self.ZU[node] = self.u.cores[node][ind]
+
+        for k in range(self.M_A):
+          rA = self.A_params[k][node].shape[-1]
+          self.ZUA[k][node] = self.rng.standard_normal((self.kickrank, ru, rA))
+          self.ZA[k][node] = self.A_params[k][node][ind]
+
+        for k in range(self.M_b):
+          rb = self.b_params[k][node].shape[-1]
+          self.ZUb[k][node] = self.rng.standard_normal((self.kickrank, ru, rb))
+          self.Zb[k][node] = self.b_params[k][node][ind]
+
+      else:
+        for child in node.children:
+          worker(child)
+
+        ru = self.u.cores[node][-1]
+        ind = self.rng.choice(np.arange(self.kickrank*node.n_children), self.kickrank, replace=True) #TODO replace=False?
+
+        offset = node.children+1
+        einsum_args = [self.u.cores[node], np.arange(offset, 2*offset)]
+        for ci, child in enumerate(node.children):
+          einsum_args += [self.ZU[child], [ci, offset+ci]]
+        
+        einsum_args += [np.concatenate([np.arange(offset-1), 2*offset-1])]
+        ZU = np.einsum(*einsum_args, optimize=True)
+        ZU = ZU.reshape(-1, ZU.shape[-1])
+        self.ZU[node] = ZU[ind]
+
+        for k in range(self.M_A):
+          rA = self.A_params[k][node].shape[-1]
+
+          self.ZUA[k][node] = self.rng.standard_normal((self.kickrank, ru, rA))
+
+          crC = self.A_params[k].cores[node]
+          offset = node.children+1
+          einsum_args = [crC, np.arange(offset, 2*offset)]
+          for ci, child in enumerate(node.children):
+            einsum_args += [self.ZA[k][child], [ci, offset+ci]]
+          
+          einsum_args += [np.concatenate([np.arange(offset-1), 2*offset-1])]
+          ZA = np.einsum(*einsum_args, optimize=True)
+          ZA = ZA.reshape(-1, ZA.shape[-1])
+          self.ZA[k][node] = ZA[ind]
+
+        for k in range(self.M_b):
+          rb = self.b_params[k][node].shape[-1]
+          self.ZUb[k][node] = self.rng.standard_normal((self.kickrank, ru, rb))
+
+          crC = self.b_params[k].cores[node]
+          offset = node.children+1
+          einsum_args = [crC, np.arange(offset, 2*offset)]
+          for ci, child in enumerate(node.children):
+            einsum_args += [self.Zb[k][child], [ci, offset+ci]]
+          
+          einsum_args += [np.concatenate([np.arange(offset-1), 2*offset-1])]
+          Zb = np.einsum(*einsum_args, optimize=True)
+          Zb = Zb.reshape(-1, Zb.shape[-1])
+          self.Zb[k][node] = Zb[ind]
+        
 
   @staticmethod
   def _orth_towards_0(tensor: TreeBasedTensor, return_indices = True):
