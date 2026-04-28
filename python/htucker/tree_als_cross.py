@@ -4,6 +4,7 @@ from tree_tensor import TreeBasedTensor
 from tree import NodeIndexedList, TreeNode
 from maxvolpy.maxvol import rect_maxvol, svd_cut
 import copy
+from scipy.sparse import csr_matrix, issparse
 
 class TreeALSCross:
   def __init__(
@@ -12,14 +13,17 @@ class TreeALSCross:
       b_params: list[TreeBasedTensor],
       assem_solve_fun,
       use_indices=False,
-      rinit=0 
+      kickrank=0,
+      rinit=0,
+      verbose=0
     ):
     # store parameters
     self.A_params = [copy.deepcopy(A_param) for A_param in A_params]
     self.b_params = [copy.deepcopy(b_param) for b_param in b_params]
     self.assem_solve_fun = assem_solve_fun
 
-    self.verbose = True
+    self.verbose = verbose
+    self.kickrank = kickrank
 
     self.rng = np.random.default_rng()
 
@@ -75,7 +79,11 @@ class TreeALSCross:
 
     # init UAU and UF
     self._init_right_projection()
-    if self.verbose:
+
+    if self.kickrank > 0:
+      pass
+
+    if self.verbose > 0:
       print('Init finished')
 
   def run(self, n_iter=1, tol=1e-3):
@@ -104,7 +112,7 @@ class TreeALSCross:
         dx = np.linalg.norm(U0 - U_prev) / np.linalg.norm(U0)
 
       self.max_dx = max(self.max_dx, dx)
-      if self.verbose > 0:
+      if self.verbose > 1:
         print(f'    node {special.id} (s)'.ljust(20), f'dx={dx:.2e}')
 
       # truncate U0
@@ -115,7 +123,37 @@ class TreeALSCross:
       # cast non-orth factor to next core, which is root as child
       self.u.cores[self.root_node] = np.tensordot(self.u.cores[self.tree.root], v, axes=(-1,-1))
 
-      # projection onto solution basis U0
+      ## rank adaption
+      if self.kickrank > 0:
+        # compute residual at indices
+        for k in range(self.M_A):
+          cru = U0 @ v @ self.ZU[k][special]
+          rz = self.ZA[k][special].shape[1]
+          for l in range(rz):
+            if issparse(self.A0[k][0]):
+              crA = csr_matrix((self.Nx, self.Nx))
+            else:
+              crA = np.zeros((self.Nx, self.Nx))
+            for j, A0_j in enumerate(self.A0[k]):
+              crA += A0_j * self.ZA[k][special][j, l]
+
+          self.Z0[:,l] += np.ravel(crA @ cru[:,l])
+
+        for k in range(self.M_b):
+          self.Z0 -= self.F0[k] @ self.Zb[k][special]
+
+        # QR residual
+        self.Z0 = np.linalg.qr(self.Z0)[0]
+        # append residual to U core
+        cru = np.hstack((self.U0, self.Z0))
+
+        # QR enriched core
+        U0, v = np.linalg.qr(cru)
+        self.u.cores[special] = U0
+        # cast non-orth factor to next core, which is root as child
+        self.u.cores[self.root_node] = np.tensordot(self.u.cores[self.tree.root], v, axes=(-1,-1))
+
+      ## projection onto solution basis U0
       for k in range(self.M_A):
         proj = []
         for j, A0_j in enumerate(self.A0[k]):
@@ -126,6 +164,19 @@ class TreeALSCross:
       for k in range(self.M_b):
         self.UF[k][special] = (np.conjugate(U0.T) @ self.F0[k])
 
+      ## Project onto residual
+      if self.kickrank > 0:
+        for k in range(self.M_A):
+          proj = []
+          for j, A0_j in enumerate(self.A0[k]):
+            proj += [np.conjugate(self.Z0.T) @ self.A0[k][j] @ U0]
+
+          self.ZU[k][special] = np.stack(proj, axis=-1)
+        
+        for k in range(self.M_b):
+          self.Zb[k][special] = np.conjugate(self.Z0.T) @ self.F0[k]
+
+      ## traverse tree
       self._als_interior_worker(self.root_node)
 
       if self.verbose > 0:
@@ -143,7 +194,7 @@ class TreeALSCross:
     #### solve reduced system
     dx = self._solve_reduced(node)
     self.max_dx = max(self.max_dx, dx)
-    if self.verbose:
+    if self.verbose > 1:
       print(f'    node {node.id} down'.ljust(20), f'dx={dx:.2e}')
 
     #### Iterate over children
@@ -155,14 +206,95 @@ class TreeALSCross:
       old_shape = core.shape
       core = core.reshape(-1, core.shape[-1])
       cru,s,v = svd_cut(core, tol=self.tol/np.sqrt(self.tree.order))
+      # cast non orth factor to child
+      v = np.diag(s) @ v
+      self.u.cores[child] = np.tensordot(self.u.cores[child], v, axes=(-1,-1))
 
+      ## AMEn rank adaption
+      if self.kickrank > 0:
+        U = (cru @ v).reshape(old_shape[:-1] + (-1,))
+        U = np.moveaxis(U, -1, child_ind)
+        crz = np.zeros(0)
+        crz_new = np.zeros(0)
+        # Au at res indices
+        for k in range(self.M_A):
+          crC = self.A_params[k].cores[node]
+
+          # current
+          offset = (node.n_children+1)
+          einsum_args = [
+            U, np.arange(1, 3*offset, 3),
+            crC, np.arange(2, 3*offset, 3),
+            self.ZU[k][child], [1+3*child_ind, 3*child_ind], # ZU up ru x rz
+            self.ZA[k][child], [2+3*child_ind, 3*child_ind]
+            ]
+          for sibling in child.siblings:
+            si = sibling.child_ind
+            einsum_args += [self.UAU[k][sibling], np.arange(3*si, 3*(si+1))]
+
+          einsum_args += [self.UAU[k][node.parent], np.arange(3*(offset-1), 3*offset)]
+          einsum_args += [np.arange(0,3*offset,3)]
+          crz = crz + np.einsum(*einsum_args, optimize=True)
+
+          # update
+          einsum_args = [
+            U, np.arange(1, 3*offset, 3),
+            crC, np.arange(2, 3*offset, 3),
+            self.ZU[k][child], [1+3*child_ind, 3*child_ind],
+            self.ZA[k][child], [2+3*child_ind, 3*child_ind]
+            ]
+          for sibling in child.siblings:
+            si = sibling.child_ind
+            einsum_args += [self.ZUA[k][sibling], np.arange(3*si, 3*(si+1))]
+
+          einsum_args += [self.ZUA[k][node.parent], np.arange(3*(offset-1), 3*offset)]
+          einsum_args += [np.arange(0,3*offset,3)]
+          crz_new = crz_new + np.einsum(*einsum_args, optimize=True)
+
+        # and corresponding RHS
+        for k in range(self.M_b):
+          crC = self.b_params[k].cores[node]
+
+          # current residual
+          offset = node.n_children+1
+          einsum_args = [
+            crC, np.arange(1, 2*offset, 2),
+            self.Zb[k][child], [1+2*child_ind, 2*child_ind]
+            ]
+          for sibling in child.siblings:
+            si = sibling.child_ind
+            einsum_args += [self.UF[k][sibling], [2*si, 2(si+1)]]
+          
+          einsum_args += [self.UF[k][node.parent], [2*(offset-1), 2*offset]]
+          einsum_args += [np.arange(0, 2*offset, 2)]
+          crz -= np.einsum(*einsum_args, optimize=True)
+
+          # update residual
+          einsum_args = [
+            crC, np.arange(1, 2*offset, 2),
+            self.Zb[k][child], [1+2*child_ind, 2*child_ind]
+            ]
+          for sibling in child.siblings:
+            si = sibling.child_ind
+            einsum_args += [self.ZUb[k][sibling], [2*si, 2(si+1)]]
+          
+          einsum_args += [self.ZUb[k][node.parent], [2*(offset-1), 2*offset]]
+          einsum_args += [np.arange(0, 2*offset, 2)]
+          crz -= np.einsum(*einsum_args, optimize=True)
+
+        # enrich by combining solution and residual
+        crz = np.moveaxis(crz, child_ind, -1)
+        crz = crz.reshape(-1, crz.shape[-1])
+        cru = np.stack((cru, crz), axis=-1)
+        cru, v = np.linalg.qr(cru)
+        # cast non orth factor to child
+        self.u.cores[child] = np.tensordot(self.u.cores[child], v, axes=(-1,-1))
+
+      ## update core
       core = cru.reshape(old_shape[:-1] + (-1,))
       self.u.cores[node] = np.moveaxis(core, -1, child_ind)
 
-      # cast non orth factor to child
-      self.u.cores[child] = np.tensordot(self.u.cores[child], (np.diag(s) @ v), axes=(-1,-1))
-
-      # update interface projections
+      ## update interface projections
       cru = self.u.cores[node]
       cru_conj = np.conj(cru)
 
@@ -202,7 +334,48 @@ class TreeALSCross:
 
         self.UF[k][node] = np.einsum(*einsum_args, optimize=True)
 
-      # go to child
+      ## projections with the residual
+      if self.kickrank > 0:
+        crz_new = np.moveaxis(crz_new, child_ind, -1)
+        old_shape = crz_new.shape[:-1]
+        crz_new = crz_new.reshape(-1, crz_new.shape[-1])
+        crz_new = np.linalg.qr(crz_new)[0]
+        crz_new = crz_new.reshape(old_shape + (-1,))
+        crz_new = np.moveaxis(crz_new, -1, child_ind)
+
+        crz_new_conj = np.conjugate(crz_new)
+
+        for k in range(self.M_A):
+          ind_end = 3*(node.n_children+1)
+          einsum_args = [
+            crz_new_conj, np.arange(0, ind_end, 3),
+            self.u.cores[node], np.arange(1, ind_end, 3),
+            self.A_params[k].cores[node], np.arange(2, ind_end, 3),
+          ]
+          for sibling in child.siblings:
+            einsum_args += [self.ZUA[k][sibling], np.arange(3*si, 3*(si+1))]
+
+          einsum_args += [self.ZUA[k][node.parent], np.arange(ind_end-3, ind_end)]
+          einsum_args += [np.arange(3*child_ind, 3*(child_ind+1))]
+          self.ZUA[k][node] = np.einsum(*einsum_args, optimize=True)
+
+        for k in range(self.M_b):
+          crC = self.b_params[k].cores[node]
+
+          ind_end = 2*(node.n_children+1)
+          einsum_args = [
+            crz_new_conj, np.arange(0, ind_end, 2),
+            crC, np.arange(1, ind_end, 2)
+            ]
+          for sibling in child.siblings:
+            einsum_args += [self.ZUb[k][sibling], np.arange(2*si, 2*(si+1))]
+          
+          einsum_args += [self.ZUb[k][node.parent], np.arange(ind_end-2, ind_end)]
+          einsum_args += [np.arange(2*child_ind, 2*(child_ind+1))]
+
+          self.ZUb[k][node] = np.einsum(*einsum_args, optimize=True)
+
+      ## go to child
       if child.isleaf:
         self._als_leaf_worker(child)
       else:
@@ -212,7 +385,7 @@ class TreeALSCross:
     # solve
     dx = self._solve_reduced(node)
     self.max_dx = max(self.max_dx, dx)
-    if self.verbose:
+    if self.verbose > 1:
       print(f'    node {node.id} up'.ljust(20), f'dx={dx:.2e}')
 
     # orth and truncate towards parent
@@ -220,6 +393,50 @@ class TreeALSCross:
     old_shape = core.shape
     core = core.reshape(-1, core.shape[-1])
     cru, s, v = svd_cut(core, tol=self.tol/np.sqrt(self.tree.order))
+    v = np.diag(s) @ v
+
+    ## rank adaption
+    if self.kickrank > 0:
+      U = (cru @ v).reshape(old_shape[:-1] + (-1,))
+      crz = np.zeros(0)
+      crz_new = np.zeros(0)
+
+      for k in range(self.M_A):
+        crC = self.A_params[k].cores[node]
+
+        # current
+        offset = (node.n_children+1)
+        einsum_args = [
+          U, np.arange(0, 2*offset, 2),
+          crC, np.arange(1, 2*offset, 2)
+          ]
+        for ci, child in node.children:
+          einsum_args += [self.UA[k][child], [1+2*ci, ci]]
+
+        einsum_args += [self.ZUA[k][node.parent], [offset-1, 2*offset-2, 2*offset-1]]
+        einsum_args += [np.arange(offset)]
+        crz = crz + np.einsum(*einsum_args, optimize=True)
+
+        # update
+        einsum_args = [
+          U, np.arange(1, 3*offset, 3),
+          crC, np.arange(2, 3*offset, 3),
+          ]
+        for ci, child in enumerate(node.children):
+          einsum_args += [self.ZU[k][sibling], [3*ci, 1+3*ci]]
+          einsum_args += [self.ZA[k][sibling], [3*ci, 2+3*ci]]
+
+        einsum_args += [self.ZUA[k][node.parent], np.arange(3*(offset-1), 3*offset)]
+        einsum_args += [np.arange(0,3*offset,3)]
+        crz_new = crz_new + np.einsum(*einsum_args, optimize=True)
+
+        # enrich core
+        crz = crz.reshape(-1, crz.shape[-1])
+        cru = np.stack((cru, crz), axis=-1)
+        # orth
+        cru, rv = np.linalg.qr(cru)
+        v = rv @ v
+
 
     # maxvol
     ind, C = rect_maxvol(cru, maxK=cru.shape[1])
@@ -229,7 +446,6 @@ class TreeALSCross:
     self.u.cores[node] = C.reshape(old_shape[:-1] + (-1,))
 
     # cast non-orth factor to parent
-    core = self.u.cores[node.parent]
     # TODO get rid of this hack, this stems from the tree modification
     if node == self.root_node:
       ci = 1
@@ -238,10 +454,10 @@ class TreeALSCross:
     else:
       ci = node.child_ind
 
-    core = np.tensordot(core, qmax @ np.diag(s) @ v, axes=(ci, -1))
+    core = np.tensordot(self.u.cores[node.parent], qmax @ v, axes=(ci, -1))
     self.u.cores[node.parent] = np.moveaxis(core, -1, ci)
 
-    # update right interface projection (sample param on U indices)
+    ## update right interface projection (sample param on U indices)
     for k in range(self.M_A):
       tmp = self.A_params[k].cores[node]
       for child in node.children:
@@ -260,7 +476,7 @@ class TreeALSCross:
       tmp = tmp.reshape(-1, tmp.shape[-1])
       self.Ub[k][node] = tmp[ind]
 
-    # update left interface projection
+    ## update left interface projection
     cru = self.u.cores[node]
     cru_conj = np.conj(cru)
 
@@ -298,6 +514,45 @@ class TreeALSCross:
 
     # TODO update index set (for index based assem_solve_fun)
 
+    ## sample at res indices
+    if self.kickrank > 0:
+      crz_new = crz_new.reshape(-1, crz_new.shape[-1])
+      crz_new = np.linalg.qr(crz_new)
+      ind, C = rect_maxvol(crz_new, maxK=crz_new.shape[1])
+      
+      for k in range(self.M_A):
+        crC = self.A_params[k].cores[node]
+        offset = node.children+1
+        einsum_args = [crC, np.arange(offset, 2*offset)]
+        for ci, child in enumerate(node.children):
+          einsum_args += [self.ZA[k][child], [ci, offset+ci]]
+        
+        einsum_args += [np.concatenate([np.arange(offset-1), 2*offset-1])]
+        ZA = np.einsum(*einsum_args, optimize=True)
+        ZA = ZA.reshape(-1, ZA.shape[-1])
+        self.ZA[k][node] = ZA[ind]
+
+        einsum_args = [self.u.cores[node], np.arange(offset, 2*offset)]
+        for ci, child in enumerate(node.children):
+          einsum_args += [self.ZU[k][child], [ci, offset+ci]]
+        
+        einsum_args += [np.concatenate([np.arange(offset-1), 2*offset-1])]
+        ZU = np.einsum(*einsum_args, optimize=True)
+        ZU = ZU.reshape(-1, ZU.shape[-1])
+        self.ZU[k][node] = ZU[ind]
+
+      for k in range(self.M_b):
+        crC = self.b_params[k].cores[node]
+        offset = node.children+1
+        einsum_args = [crC, np.arange(offset, 2*offset)]
+        for ci, child in enumerate(node.children):
+          einsum_args += [self.Zb[k][child], [ci, offset+ci]]
+        
+        einsum_args += [np.concatenate([np.arange(offset-1), 2*offset-1])]
+        Zb = np.einsum(*einsum_args, optimize=True)
+        Zb = Zb.reshape(-1, Zb.shape[-1])
+        self.Zb[k][node] = Zb[ind]
+
 
   def _als_leaf_worker(self, node: TreeNode):
     # compute RHS projection
@@ -321,7 +576,7 @@ class TreeALSCross:
     # check error
     dx = np.linalg.norm(cru.flatten() - self.u.cores[node].flatten()) / np.linalg.norm(cru)
     self.max_dx = max(self.max_dx, dx)
-    if self.verbose:
+    if self.verbose > 1:
       print(f'    node {node.id} leaf'.ljust(20), f'dx={dx:.2e}')
 
     # update solution
@@ -365,8 +620,6 @@ class TreeALSCross:
       crC = self.b_params[k].cores[node]
 
       self.UF[k][node] = np.tensordot(cru, crC, axes=(0,0))
-
-    return dx
 
 
   def _solve_reduced(self, node:TreeNode):
