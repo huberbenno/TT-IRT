@@ -549,7 +549,38 @@ class TreeALSCross:
     ## sample at res indices
     if self.kickrank > 0:
       crz_new = crz_new.reshape(-1, crz_new.shape[-1])
-      crz_new = np.linalg.qr(crz_new)
+      crz_new = np.linalg.qr(crz_new)[0]
+
+      crz_new_conj = np.conjugate(crz_new)
+
+      for k in range(self.M_A):
+        ind_end = 3*(node.n_children+1)
+        einsum_args = [
+          crz_new_conj, np.arange(0, ind_end, 3),
+          self.u.cores[node], np.arange(1, ind_end, 3),
+          self.A_params[k].cores[node], np.arange(2, ind_end, 3),
+        ]
+        for ci, child in node.children:
+          einsum_args += [self.ZUA[k][child], np.arange(3*ci, 3*(ci+1))]
+
+        einsum_args += [np.arange(ind_end-3, ind_end)]
+        self.ZUA[k][node] = np.einsum(*einsum_args, optimize=True)
+
+      for k in range(self.M_b):
+        crC = self.b_params[k].cores[node]
+
+        ind_end = 2*(node.n_children+1)
+        einsum_args = [
+          crz_new_conj, np.arange(0, ind_end, 2),
+          crC, np.arange(1, ind_end, 2)
+          ]
+        for ci, child in node.children:
+          einsum_args += [self.ZUb[k][child], np.arange(2*ci, 2*(ci+1))]
+        
+        einsum_args += [np.arange(ind_end-2, ind_end)]
+        self.ZUb[k][node] = np.einsum(*einsum_args, optimize=True)
+      
+      #sample at res indices
       ind, C = rect_maxvol(crz_new, maxK=crz_new.shape[1])
 
       offset = node.children+1
@@ -687,6 +718,26 @@ class TreeALSCross:
     ## rank adaption
     if self.kickrank > 0:
       crz = np.linalg.qr(crz)
+
+      crz_new_conj = np.conjugate(crz)
+
+      for k in range(self.M_A):
+        einsum_args = [
+          crz_new_conj, [0,1],
+          self.u.cores[node], [0,2],
+          self.A_params[k].cores[node], [0,3],
+          [1,2,3]
+        ]
+        self.ZUA[k][node] = np.einsum(*einsum_args, optimize=True)
+
+      for k in range(self.M_b):
+        einsum_args = [
+          crz_new_conj, [0,1],
+          self.b_params[k].cores[node], [0,2]
+          [1,2]
+          ]
+        self.ZUb[k][node] = np.einsum(*einsum_args, optimize=True)
+      
       ind = rect_maxvol(crz, maxK=crz.shape[1])
 
       self.ZU[node] = self.u.cores[node][ind]
