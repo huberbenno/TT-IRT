@@ -84,7 +84,7 @@ class TreeNode:
     if self.isroot:
       return None
     else:
-      return self.parent.children.index(self)
+      return self.parent._children.index(self.id)
 
   @property
   def isleaf(self) -> bool:

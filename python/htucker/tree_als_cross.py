@@ -480,8 +480,6 @@ class TreeALSCross:
     # TODO get rid of this hack, this stems from the tree modification
     if node == self.root_node:
       ci = 1
-    elif node.parent.id == self.root_node.id:
-      ci = node.child_ind - 1
     else:
       ci = node.child_ind
 
