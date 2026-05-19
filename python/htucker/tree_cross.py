@@ -1,5 +1,6 @@
 import numpy as np
 
+from typing import Callable
 from tree_tensor import TreeBasedTensor
 from tree import NodeIndexedList
 from maxvolpy.maxvol import rect_maxvol, svd_cut
@@ -12,7 +13,7 @@ class TreeCross:
     self.n_eval = 0
 
 
-  def run(self, eval_f, n_iter=1, eps=0., kickrank=2, rf=2, verbose=False):
+  def run(self, eval_f: Callable[[np.array]], n_iter: int=1, eps: float=0., kickrank: int=2, rf=2, force_init: bool=True, verbose: bool=False) -> None:
     """
     Run the cross approximation.
 
@@ -32,7 +33,7 @@ class TreeCross:
     verbose: bool
       Print diagnostics if True.
     """
-    if self.indexset_list is None:
+    if self.indexset_list is None or force_init:
       self._init()
 
     def worker(node, indexset_p, indexset_dims_p):
@@ -64,7 +65,7 @@ class TreeCross:
           core = np.moveaxis(core, i, -1)
           old_shape = core.shape[:-1]
           core = core.reshape(-1, core.shape[-1])
-          u,s,v = svd_cut(core, tol=eps)
+          u,s,v = svd_cut(core, tol=eps/np.sqrt(self.tensor.ndim), norm='fro')
           r = np.diag(s) @ v
           ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
           qmax = u[ind]
@@ -96,7 +97,7 @@ class TreeCross:
           old_shape = core.shape[:-1]
           core = core.reshape(-1, core.shape[-1])
 
-          u,s,v = svd_cut(core, tol=eps)
+          u,s,v = svd_cut(core, tol=eps/np.sqrt(self.tensor.ndim), norm='fro')
           # u,s,v = np.linalg.svd(core, full_matrices=False)
           r = np.diag(s) @ v
           ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
