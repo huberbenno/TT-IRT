@@ -1,4 +1,4 @@
-from tree import Tree, NodeIndexedList
+from tree import Tree, TreeNode, NodeIndexedList
 import numpy as np
 from maxvolpy.maxvol import svd_cut, rect_maxvol
 import copy
@@ -264,42 +264,46 @@ class TreeBasedTensor:
     Compute the Frobenius norm of the tensor.
     """
     return np.sqrt(self.dot(self))[0]
-
-  def round(self, tol=1e-3) -> TreeBasedTensor:
+  
+  def round(self, tol:float = 0.) -> TreeBasedTensor:
     """
     Truncate tensor ranks to specified tolerance using SVD.
-
-    TODO relative tol
     """
-    r = self._orth_subtree(self.tree.root)
-    self.cores[self.tree.root] *= r
 
     def worker_trunc(node):
       core = self.cores[node]
       if node.isleaf:
-        u,s,v = svd_cut(core, tol=tol)
-        self.cores[node] = u @ np.diag(s) @ v
-
+        u,s,v = svd_cut(core, tol=tol/np.sqrt(self.ndim), norm='fro')
+        self.cores[node] = u
+        return np.diag(s) @ v
       else:
         for i, child in enumerate(node.children):
           r_c = core.shape[i]
           core = np.swapaxes(core, -1, i)
           old_shape = core.shape[:-1]
           core = core.reshape(-1, r_c)
-          u,s,v = svd_cut(core, tol=tol)
+          u,s,v = svd_cut(core, tol=tol/np.sqrt(self.ndim), norm='fro')
           core = u
           self.cores[child] = np.tensordot(self.cores[child], np.diag(s) @ v, axes=(-1,-1))
-          worker_trunc(child)
+          r = worker_trunc(child)
+          core = np.tensordot(core, r, axes=(-1,-1))
           core = core.reshape(old_shape + (-1,))
           core = np.swapaxes(core, -1, i)
 
+        old_shape = core.shape[:-1]
+        core = core.reshape(-1, core.shape[-1])
+        u,s,v = svd_cut(core, tol=tol/np.sqrt(self.ndim), norm='fro')
+        core = u.reshape(old_shape + (-1,))
         self.cores[node] = core
 
-    worker_trunc(self.tree.root)
+        return np.diag(s) @ v
+
+    r = worker_trunc(self.tree.root)
+    self.cores[self.tree.root] = self.cores[self.tree.root] * r
 
     return self
 
-  def _orth_subtree(self, node):
+  def _orth_subtree(self, node : TreeNode):
     core = self.cores[node]
     if node.isleaf:
       q,r = np.linalg.qr(core)
@@ -317,7 +321,7 @@ class TreeBasedTensor:
       self.cores[node] = q.reshape(old_shape)
       return r
 
-  def _orth_subtree_maxvol(self, node):
+  def _orth_subtree_maxvol(self, node: TreeNode):
     indexset_list = NodeIndexedList(self.tree.n_nodes * [None])
     indexset_dims_list = NodeIndexedList(self.tree.n_nodes * [None])
     maxvol_ind_list = NodeIndexedList(self.tree.n_nodes * [None])
@@ -349,7 +353,7 @@ class TreeBasedTensor:
           dims = np.concatenate(c_dims)
           # build combined index set
           ind_grid = np.meshgrid(
-            *[np.arange(indexset_list[c].shape[0]) for c in node.children]
+            *[np.arange(indexset_list[c].shape[0]) for c in node.children], indexing='ij'
           )
           indexset = np.concatenate(
             [*[indexset_list[c][grid.flatten()] for c, grid in zip(node.children, ind_grid)]],
@@ -381,7 +385,7 @@ class TreeBasedTensor:
     print(f"Tree tensor with shape {self.shape}")
     print(self._print(self.tree.root),end='')
 
-  def _print(self, node, prefix='', last=False):
+  def _print(self, node: TreeNode, prefix: str='', last: bool=False):
     if node.isleaf:
       return prefix[3:] + f' + [{node.id}] dim {node.dim} of size {self.shape[node.dim]}\n'
     else:
