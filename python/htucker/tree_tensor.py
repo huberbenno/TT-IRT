@@ -290,16 +290,17 @@ class TreeBasedTensor:
           core = core.reshape(old_shape + (-1,))
           core = np.swapaxes(core, -1, i)
 
-        old_shape = core.shape[:-1]
-        core = core.reshape(-1, core.shape[-1])
-        u,s,v = svd_cut(core, tol=tol/np.sqrt(self.ndim), norm='fro')
-        core = u.reshape(old_shape + (-1,))
+        if not node.isroot:
+          old_shape = core.shape[:-1]
+          core = core.reshape(-1, core.shape[-1])
+          u,s,v = svd_cut(core, tol=tol/np.sqrt(self.ndim), norm='fro')
+          core = u.reshape(old_shape + (-1,))
+
         self.cores[node] = core
 
         return np.diag(s) @ v
 
-    r = worker_trunc(self.tree.root)
-    self.cores[self.tree.root] = self.cores[self.tree.root] * r
+    worker_trunc(self.tree.root)
 
     return self
 
