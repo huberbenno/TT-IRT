@@ -295,10 +295,9 @@ class TreeBasedTensor:
           core = core.reshape(-1, core.shape[-1])
           u,s,v = svd_cut(core, tol=tol/np.sqrt(self.ndim), norm='fro')
           core = u.reshape(old_shape + (-1,))
+          return np.diag(s) @ v
 
         self.cores[node] = core
-
-        return np.diag(s) @ v
 
     worker_trunc(self.tree.root)
 
