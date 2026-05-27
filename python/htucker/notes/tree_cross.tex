@@ -209,6 +209,15 @@ tree-based tensor $\Bv$, tolerance $\varepsilon$, iteration count $n_{iter}$
 \end{algorithmic}
 \end{algorithm}
 
+\begin{algorithm}
+\caption{Orthogonalize and truncate}
+\begin{algorithmic}[1]
+\Procedure{orth\_trunc}{$\alpha, \beta$}
+  \State
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
 \newpage
 
 \section{ALS cross algorithm}
@@ -241,7 +250,7 @@ We describe the analogon for tree-based tensors.
 \paragraph{Interior nodes}
 Consider an interior node $\alpha$, i.e. $\# \alpha > 1$, with adjacent nodes $\beta \in N(\alpha)$.
 The projections $A^{(<\alpha)}_\beta$ are the analogon to the left projection in the TT algorithm.
-It is the partial projection for a subtree of the maxtrix onto the solution.
+It is the partial projection for a subtree of the matrix onto the solution.
 $A^{(<\alpha)}_\beta \in \R^{r_u \times r_u \times r_A}$ is a tensor of dimension 3, with $r_u$ and $r_A$ being the rank between $\alpha$ and $\beta$ for the solution $\Bu$ and the matrix $\BA$ respectively.
 Consequently, these differ for each $\alpha$ and $\beta$, but we omit this in the notation here.
 We can give a recursive formula for $A^{(<\alpha)}_\beta$ using Einstein sum convention
@@ -250,7 +259,7 @@ We can give a recursive formula for $A^{(<\alpha)}_\beta$ using Einstein sum con
   A^{(<\alpha)}_\beta
   = \overline{\Bu^{(\alpha)}}[(j_k^{\overline{\Bu}})_{k \in K}] \
   \Bu^{(\alpha)}[(j_k^{\Bu})_{k \in K}] \
-  \Bu^{(\alpha)}[(j_k^{\BA})_{k \in K}] \
+  \BA^{(\alpha)}[(j_k^{\BA})_{k \in K}] \
   \prod_{\gamma \in N(\alpha) \setminus {\beta}} A^{(<\alpha)}_\gamma[j_{k(\beta)}^{\overline{\Bu}} j_{k(\beta)}^{\Bu} j_{k(\beta)}^{\BA}]
 \end{equation}
 Here $K$ is an index set for the neighbours $N(\alpha)$, and $k(\beta)$ is the index associated with the neighbour $\beta$.
@@ -261,13 +270,23 @@ $C = \Bu^{(\alpha)}[..., j_{k(\beta)}]$, ensure $C[\CI, :] = I$ by replacing $C 
 set
 \begin{equation}
   \label{eq:right_proj}
-  A^{(<\alpha)}_\beta
+  \tilde{A}^{(<\alpha)}_\beta
   = \overline{\Bu^{(\alpha)}}[(j_k^{\overline{\Bu}})_{k \in K}] \
   \Bu^{(\alpha)}[(j_k^{\Bu})_{k \in K}] \
   \BE[(j_k^{\BA})_{k \in K}] \
   \prod_{\gamma \in N(\alpha) \setminus {\beta}} A^{(<\alpha)}_\gamma[j_{k(\beta)}^{\overline{\Bu}} j_{k(\beta)}^{\Bu} j_{k(\beta)}^{\BA}]
 \end{equation}
 with $\BE[:, \dots, :, \CI, :, \dots, : ] = I$ when indexed with $\CI$ along the $k(\beta)$-th dimension.
+For $\beta \in S(\alpha)$ \eqref{eq:right_proj} reduces by construction to
+\begin{equation}
+  \label{eq:right_proj}
+  A^{(<\alpha)}_\beta
+  = 
+  \BA[(j_k^{\BA})_{k \in K \setminus \{k(\beta)\}}, j_{k(\beta)}^{\BA}][\CI, \colon] \
+  \prod_{\gamma \in N(\alpha) \setminus {\beta}} A^{(<\alpha)}_\gamma[j_{k(\beta)}^{\overline{\Bu}} j_{k(\beta)}^{\Bu} j_{k(\beta)}^{\BA}]
+\end{equation}
+which are simply the (partial) subtree evaluations of $\BA$ at the nested maxvol indices.
+
 
 
 
