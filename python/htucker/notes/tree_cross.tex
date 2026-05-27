@@ -240,7 +240,7 @@ We describe the analogon for tree-based tensors.
 
 \paragraph{Interior nodes}
 Consider an interior node $\alpha$, i.e. $\# \alpha > 1$, with adjacent nodes $\beta \in N(\alpha)$.
-The projections $A^{(<\alpha)}_\beta$ are the analogon to the left projection in the TT algorithm.
+The projections $A^{(<\alpha)}_\beta$ are the analogon to the left and right projection in the TT algorithm.
 It is the partial projection for a subtree of the maxtrix onto the solution.
 $A^{(<\alpha)}_\beta \in \R^{r_u \times r_u \times r_A}$ is a tensor of dimension 3, with $r_u$ and $r_A$ being the rank between $\alpha$ and $\beta$ for the solution $\Bu$ and the matrix $\BA$ respectively.
 Consequently, these differ for each $\alpha$ and $\beta$, but we omit this in the notation here.
@@ -255,21 +255,54 @@ We can give a recursive formula for $A^{(<\alpha)}_\beta$ using Einstein sum con
 \end{equation}
 Here $K$ is an index set for the neighbours $N(\alpha)$, and $k(\beta)$ is the index associated with the neighbour $\beta$.
 
-The projections $A^{(>\alpha)}_\beta$ correspond to the right projections.
-In order to sparsify the projection, we choose maxvol indices $\CI$ in the matrization
-$C = \Bu^{(\alpha)}[..., j_{k(\beta)}]$, ensure $C[\CI, :] = I$ by replacing $C C[\CI,:]^{-1}$ and
-set
+In order to sparsify the reduced systems, we also define projection $\tilde{A}^{(>\alpha)}_\beta$. 
+We compute for all $\gamma \in N(\alpha) \setminus \{\beta\}$ maxvol indices $\CI $ in the matrization
+$\BC = \Bu^{(\gamma)}[..., j_{k(\alpha)}]$, ensure $\BC[\CI, :] = I$ by setting 
+\begin{equation*}
+  u^{(\gamma)}[(j_k)_{k \in K(\gamma)}] = \BC \BC[\CI,:]^{-1} [(j_k)_{k \in K(\gamma) \setminus \{\alpha\}}, j_{k(\alpha)}],
+\end{equation*}
+i.e., \emph{orthogonalize $\Bu^{(\gamma)}$ towards $\alpha$}
+and compute
 \begin{equation}
-  \label{eq:right_proj}
-  A^{(<\alpha)}_\beta
+  \label{eq:right_proj_reduced}
+  \tilde{A}^{(>\alpha)}_\beta
   = \overline{\Bu^{(\alpha)}}[(j_k^{\overline{\Bu}})_{k \in K}] \
-  \Bu^{(\alpha)}[(j_k^{\Bu})_{k \in K}] \
-  \BE[(j_k^{\BA})_{k \in K}] \
-  \prod_{\gamma \in N(\alpha) \setminus {\beta}} A^{(<\alpha)}_\gamma[j_{k(\beta)}^{\overline{\Bu}} j_{k(\beta)}^{\Bu} j_{k(\beta)}^{\BA}]
+  \BE^{(\alpha)}[(j_k^{\Bu})_{k \in K}] \
+  \BA^{(\alpha)}[(j_k^{\BA})_{k \in K}] \
+  \prod_{\gamma \in N(\alpha) \setminus {\beta}} \tilde{A}^{(>\alpha)}_\gamma[j_{k(\beta)}^{\overline{\Bu}} j_{k(\beta)}^{\Bu} j_{k(\beta)}^{\BA}]
 \end{equation}
-with $\BE[:, \dots, :, \CI, :, \dots, : ] = I$ when indexed with $\CI$ along the $k(\beta)$-th dimension.
+where $\BE^{(\alpha)}$ has the same shape as $\Bu^{(\alpha)}$, but is chosen such that the matrization $\BC = \BE[..., j_{k(\beta)}]$ satifies  $\BC[:, \CI]= I$ and is zero everywhere else.
+Due to the choice of $\BE$ and $\Bu^{(\alpha)}$, $\tilde{A}^{(>\alpha)}_\beta$ for $\beta \in S(\alpha)$ is given by 
+\begin{equation}
+  \label{eq:right_proj_reduced)}
+  \tilde{A}^{(>\alpha)}_\beta
+  = \overline{\Bu^{(\alpha)}}[(j_k^{\overline{\Bu}})_{k \in K}] \
+  \BE^{(\alpha)}[(j_k^{\Bu})_{k \in K}] \
+  \BA^{(\alpha)}[(j_k^{\BA})_{k \in K}] \
+  \prod_{\gamma \in N(\alpha) \setminus {\beta}} \tilde{A}^{(>\alpha)}_\gamma[j_{k(\beta)}^{\overline{\Bu}} j_{k(\beta)}^{\Bu} j_{k(\beta)}^{\BA}]
+\end{equation}
+which is the partial evaluation of $\BA$ at the (nested) maxvol indices.
 
+\paragraph{Leaf nodes}
 
+By definition, a leaf node $\alpha$ has no children and $N(\alpha)$ only contains the parent node $\beta$.
+Thus the left projection is given by
+\begin{equation*}
+  A^{(<\alpha)}
+  = \left( \Bu^{(\alpha)} \right)^H \BA^{(\alpha)}   \Bu^{(\alpha)}
+\end{equation*} 
+and the right projection is given by the same expression.
+The corresponding Petrov-Galerkin equation is is given by sampling the core at the maxvol indices $\CI$ of $ \Bu^{(\alpha)}$, i.e.
+\begin{equation*}
+  \tilde{A}^{(> \alpha)}
+  = \Bu^{(\alpha)}[\CI, :]
+\end{equation*} 
+
+\paragraph{Reduced linear systems}
+
+\begin{equation*}
+  U^{\neq \alpha} A U^{\neq \alpha}
+\end{equation*}
 
 
 \begin{algorithm}
