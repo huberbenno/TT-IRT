@@ -264,54 +264,82 @@ We can give a recursive formula for $A^{(<\alpha)}_\beta$ using Einstein sum con
 \end{equation}
 Here $K$ is an index set for the neighbours $N(\alpha)$, and $k(\beta)$ is the index associated with the neighbour $\beta$.
 
-In order to sparsify the reduced systems, we also define projection $\tilde{A}^{(>\alpha)}_\beta$. 
+In order to sparsify the reduced systems, we also define projections $\tilde{A}^{(<\alpha)}_\beta$. 
 We compute for all $\gamma \in N(\alpha) \setminus \{\beta\}$ maxvol indices $\CI $ in the matrization
 $\BC = \Bu^{(\gamma)}[..., j_{k(\alpha)}]$, ensure $\BC[\CI, :] = I$ by setting 
 \begin{equation*}
   u^{(\gamma)}[(j_k)_{k \in K(\gamma)}] = \BC \BC[\CI,:]^{-1} [(j_k)_{k \in K(\gamma) \setminus \{\alpha\}}, j_{k(\alpha)}],
 \end{equation*}
 i.e., \emph{orthogonalize $\Bu^{(\gamma)}$ towards $\alpha$}
-and compute
+and replace the right projector $\Bu^{(\alpha)}$ with a particular choice $\BE^{(\alpha)}$. 
+$\BE^{(\alpha)}$ has the same shape as $\Bu^{(\alpha)}$, but is chosen such that the matrization $\BC = \BE[..., j_{k(\beta)}]$ satifies  $\BC[:, \CI]= I$ and is zero everywhere else.
+Then the partial projections simplify to
 \begin{equation}
   \label{eq:right_proj_reduced}
-  \tilde{A}^{(>\alpha)}_\beta
+  \tilde{A}^{(<\alpha)}_\beta
   = \overline{\Bu^{(\alpha)}}[(j_k^{\overline{\Bu}})_{k \in K}] \
   \BE^{(\alpha)}[(j_k^{\Bu})_{k \in K}] \
   \BA^{(\alpha)}[(j_k^{\BA})_{k \in K}] \
-  \prod_{\gamma \in N(\alpha) \setminus {\beta}} \tilde{A}^{(>\alpha)}_\gamma[j_{k(\beta)}^{\overline{\Bu}} j_{k(\beta)}^{\Bu} j_{k(\beta)}^{\BA}]
+  \prod_{\gamma \in N(\alpha) \setminus {\beta}} \tilde{A}^{(<\alpha)}_\gamma
+  [j_{k(\gamma)}^{\overline{\Bu}} j_{k(\gamma)}^{\BA}]
 \end{equation}
 where $\BE^{(\alpha)}$ has the same shape as $\Bu^{(\alpha)}$, but is chosen such that the matrization $\BC = \BE[..., j_{k(\beta)}]$ satifies  $\BC[:, \CI]= I$ and is zero everywhere else.
-Due to the choice of $\BE$ and $\Bu^{(\alpha)}$, $\tilde{A}^{(>\alpha)}_\beta$ for $\beta \in S(\alpha)$ is given by 
+For $\beta \in S(\alpha)$, the sparsified partial projection \eqref{eq:right_proj_reduced} simplifies by construction to
 \begin{equation}
-  \label{eq:right_proj_reduced)}
-  \tilde{A}^{(>\alpha)}_\beta
-  = \overline{\Bu^{(\alpha)}}[(j_k^{\overline{\Bu}})_{k \in K}] \
-  \BE^{(\alpha)}[(j_k^{\Bu})_{k \in K}] \
-  \BA^{(\alpha)}[(j_k^{\BA})_{k \in K}] \
-  \prod_{\gamma \in N(\alpha) \setminus {\beta}} \tilde{A}^{(>\alpha)}_\gamma[j_{k(\beta)}^{\overline{\Bu}} j_{k(\beta)}^{\Bu} j_{k(\beta)}^{\BA}]
+  \label{eq:right_proj_reduced_simplified}
+  \tilde{A}^{(<\alpha)}_\beta
+  = 
+  \left( \BA^{(\alpha)}[(j_k^{\BA})_{k \in K \setminus \{k(\beta)\}}, j_{k(\beta)}^{\BA}] \
+  \prod_{\gamma \in N(\alpha) \setminus {\beta}} \tilde{A}^{(<\alpha)}_\gamma
+  [j_{k(\gamma)}^{\overline{\Bu}} j_{k(\gamma)}^{\BA}] \right)
+  [\CI, \colon]
 \end{equation}
-which is the partial evaluation of $\BA$ at the (nested) maxvol indices.
+where the maxvol indices are applied to the first dimension of the $[(j_{k(\gamma)}^{\overline{\Bu}})_{\gamma \in N(\alpha) \setminus {\beta}}, j_{k(\beta)}^{\BA}]$ matrization of the contraction result in the parentheses.
+This is the partial evaluation of $\BA$ at the (nested) maxvol indices.
 
 \paragraph{Leaf nodes}
 
 By definition, a leaf node $\alpha$ has no children and $N(\alpha)$ only contains the parent node $\beta$.
-Thus the left projection is given by
+Thus the projection is given by
 \begin{equation*}
   A^{(<\alpha)}
-  = \left( \Bu^{(\alpha)} \right)^H \BA^{(\alpha)}   \Bu^{(\alpha)}
+  = \left( \Bu^{(\alpha)} \right)^H \BA^{(\alpha)}   \Bu^{(\alpha)}.
 \end{equation*} 
-and the right projection is given by the same expression.
-The corresponding Petrov-Galerkin equation is is given by sampling the core at the maxvol indices $\CI$ of $ \Bu^{(\alpha)}$, i.e.
+The corresponding Petrov-Galerkin projection is given by sampling the core at the maxvol indices $\CI$ of $ \Bu^{(\alpha)}$, i.e.
 \begin{equation*}
-  \tilde{A}^{(> \alpha)}
-  = \Bu^{(\alpha)}[\CI, :]
+  \tilde{A}^{(<\alpha)}
+  = \BA^{(\alpha)}[\CI, :]
 \end{equation*} 
 
 \paragraph{Reduced linear systems}
 
+At each node $\alpha$, we solve the linear system
 \begin{equation*}
-  U^{\neq \alpha} A U^{\neq \alpha}
+  (U^{\neq \alpha})^H \BA U^{\neq \alpha} \Bu^{(\alpha)} = (U^{\neq \alpha})^H \Bb
 \end{equation*}
+for $\Bu^{(\alpha)}$.
+
+The projection $(U^{\neq \alpha})^H \BA U^{\neq \alpha}$ can be computed from the partial projections described above:
+\begin{align*}
+  \left( (U^{\neq \alpha})^H \BA U^{\neq \alpha}\right)[(j^{\overline{\Bu}}_k)_{k \in K}, (j^{\Bu}_k)_{k \in K}]
+  = \BA^{(\alpha)}[(j^{\BA}_k)_{k \in K}] \prod_{\gamma \in N(\alpha)} A^{(<\alpha)}_\beta[j^{\overline{\Bu}}_{k(\gamma)} j^{\Bu}_{k(\gamma)} j^{\BA}_{k(\gamma)}]
+\end{align*}
+This is in general a dense $\prod r_\Bu \times \prod r_\Bu$ system.
+In order to reduce computational cost, we instead solve with the Petrov-Galerkin projection
+\begin{equation}
+  \label{eq:reduced_system}
+  (U^{\neq \alpha})^H \BA W^{\neq \alpha} \Bu^{(\alpha)} = (U^{\neq \alpha})^H \Bb
+\end{equation}
+which we can compute using the sparsified partial projections:
+\begin{align*}
+  &\left( (U^{\neq \alpha})^H \BA W^{\neq \alpha}\right)[(j^{\overline{\Bu}}_k)_{k \in K \setminus \{k(P(\alpha))\}}, j^{\overline{\Bu}}_{k(P(\alpha))}, j^{\Bu}_{k(P(\alpha))}] \\ 
+  &= \BA^{(\alpha)}[(j^{\BA}_k)_{k \in K}]  
+  A^{(<\alpha)}_\beta
+  [j^{\overline{\Bu}}_{k(P(\alpha))} j^{\Bu}_{k(P(\alpha))} j^{\BA}_{k(P(\alpha))}]
+  \prod_{\gamma \in S(\alpha)} \tilde{A}^{(<\alpha)}_\beta 
+  [j^{\overline{\Bu}}_{k(\gamma)} j^{\BA}_{k(\gamma)}]
+\end{align*}
+This yields $\prod_{\beta \in S(\alpha)} r_\Bu$ blocks of size $r_u \times r_u$. 
 
 
 \begin{algorithm}
@@ -336,47 +364,52 @@ The corresponding Petrov-Galerkin equation is is given by sampling the core at t
   \Comment{Update special core}
   \State $\Bu^{(D)}[\dots \widehat{j_p}] \leftarrow \Bu^{(D)}[\dots j_p] R[\widehat{j_p}, j_p]$
   \Comment{Cast non-orth factor to root node}
-  \State Compute projections $(U^H A U)^{(\{0\})}$, $(U^H b)^{(\{0\})}$
-  \Statex
+  \State Compute projections $(U^H A U)^{(<\{0\})}$, $(U^H b)^{(<\{0\})}$
   \State \Call{worker}{$D$}
   \Comment{Start DFS traversal at root}
   \State $i \leftarrow i + 1$
 \Until{err $<$ tol or $i > n_{iter}$}
 \Comment{Iterate}
 \Statex
-\Procedure{alsc\_worker}($\alpha$)
+\Procedure{alsc\_worker}{$\alpha$}
   \If{$\alpha$ is leaf}
-    \State Solve reduced system
-  \Else
-    \State Solve reduced system
-    \For{$\beta \in S(\alpha)$}
-      \State $C[j_1 \dots j_{\# S(\alpha)} j_p , j_{i_c(\beta)}] 
-        \leftarrow \Bv^{(\alpha)}[j_1 \dots j_{i_c(\beta)} \dots j_{\# S(\alpha)} j_p]$
-      \Statex \Comment{Matrization with child index moved to the back}
-      \State $Q, R \leftarrow$ \Call{svd\_trunc}{$C$, $\varepsilon / \sqrt{d}$}
-      \Comment{Orthogonalize and truncate}
-      \State $\Bu^{(\alpha)} \leftarrow Q$
-      \Comment{update solution core}
-      \State $ \Bv^{(\beta)}[j_1 \dots j_{\# S(\beta)} \widehat{j_p}]
-      \leftarrow \Bv^{(\beta)} [j_1 \dots j_{\# S(\beta)} j_p] R[\widehat{j_{p}}, j_{p}]$
-      \Statex \Comment{Cast non-orth factor to child; Einstein sum convention}
-      \State update projections UAU and UF
-      \State $R \leftarrow$ \Call{alsc\_worker}{$\beta$}
-      \Comment{Recurse to child}
-      \State $ \Bv^{(\alpha)}[j_1 \dots \widehat{j_{i_c(\beta)}} \dots j_{\# S(\alpha)} j_p]
-      \leftarrow \Bv^{(\alpha)} [j_1 \dots j_{i_c(\beta)} \dots j_{\# S(\alpha)} j_p] R[\widehat{j_{i_c(\beta)}} j_{i_c(\beta)}]$
-      \Statex \Comment{Absorb non-orth factor from child; Einstein sum convention}
-    \EndFor
-    \State Solve reduced system
-    \State $C \leftarrow \Bv^{(\alpha)}[j_1 \dots j_{\# S(\alpha)}, j_p]$ \Comment{Matrization}
-    \State $Q, R \leftarrow$ \Call{svd\_trunc}{$C$, $\varepsilon / \sqrt{d}$}
-    \Comment{Orthogonalize and truncate}
+    \State Solve reduced system \eqref{eq:reduced_system}
+    \State $Q,R \leftarrow $ \Call{orth\_trunc}{$\Bu^{(\alpha)}$, $P(\alpha)$}
+    \Comment{Orthogonalize towards parent and truncate}
     \State $I \leftarrow $ \Call{maxvol}{$Q$}
     \Comment{Compute maxvol indices}
-    \State $\Bv^{(\alpha)} \leftarrow Q Q[I, :]^{-1}$
+    \State $\Bu^{(\alpha)} \leftarrow Q Q[I, :]^{-1}$
     \Comment{Set maxvol rows to identity}
-    \State Update projections UA and Ub (sample param at indices)
-    \State Update left interface projections UAU and UF
+    \State Update projections $A^{(<\alpha)}_{\beta}$
+    \State Update projections of RHS
+  \Else
+    \State Solve reduced system \eqref{eq:reduced_system}
+    \For{$\beta \in S(\alpha)$}
+      \State $Q,R \leftarrow $ \Call{orth\_trunc}{$\Bu^{(\alpha)}$, $\beta$}
+      \Comment{Orthogonalize towards child $\beta$ and truncate}
+      \State $\Bu^{(\alpha)} \leftarrow Q$
+      \Comment{update solution core}
+      \State $ \Bu^{(\beta)}[j_1 \dots j_{\# S(\beta)} \widehat{j_p}]
+      \leftarrow \Bu^{(\beta)} [j_1 \dots j_{\# S(\beta)} j_p] R[\widehat{j_{p}}, j_{p}]$
+      \Statex \Comment{Cast non-orth factor to child; Einstein sum convention}
+      \State Update projections $A^{(<\alpha)}_{\beta}$, $\tilde{A}^{(<\alpha)}_{\beta}$
+      \State Update projections of RHS
+      \State $R \leftarrow$ \Call{alsc\_worker}{$\beta$}
+      \Comment{Recurse to child}
+      \State $ \Bu^{(\alpha)}[j_1 \dots \widehat{j_{i_c(\beta)}} \dots j_{\# S(\alpha)} j_p]
+      \leftarrow \Bu^{(\alpha)} [j_1 \dots j_{i_c(\beta)} \dots j_{\# S(\alpha)} j_p] R[\widehat{j_{i_c(\beta)}} j_{i_c(\beta)}]$
+      \Statex \Comment{Absorb non-orth factor from child; Einstein sum convention}
+    \EndFor
+    \Statex \Comment{Upwards traversal}
+    \State Solve reduced system \eqref{eq:reduced_system}
+    \State $Q,R \leftarrow $ \Call{orth\_trunc}{$\Bu^{(\alpha)}$, $P(\alpha)$}
+    \Comment{Orthogonalize towards parent and truncate}
+    \State $I \leftarrow $ \Call{maxvol}{$Q$}
+    \Comment{Compute maxvol indices}
+    \State $\Bu^{(\alpha)} \leftarrow Q Q[I, :]^{-1}$
+    \Comment{Set maxvol rows to identity}
+    \State Update projections $A^{(<\alpha)}_{p}$, $\tilde{A}^{(<\alpha)}_{p}$
+    \State Update projections of RHS
     \State return $Q[I, :] R$
     \Comment{Cast non-orth part to parent}
 
