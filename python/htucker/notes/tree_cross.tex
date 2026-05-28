@@ -80,16 +80,38 @@ It extends the idead from the TT-cross algorithm to tree based tensors.
 Key is the dynamic choice of sampling indices using the maxvol algorithm.
 
 The procedure is based on recursive, depth first tree traversal.
-For non-leaf nodes, the worker procedure iterates over the children, orthogonalizing the core towards the current child, assembling a \emph{parent index set} for the child using the maxvol procedure and the recursing to the child.
+
+\paragraph{Interior nodes}
+For interior (non-leaf) nodes, we iterate over the children.
+For each child, we form the matrization $C$ of the core $u^{(\alpha)}$ which places the coupling dimension to the child in the second dimension and all other dimensions into the first, i.e., for a child $\beta \in S(\gamma)$
+\begin{equation*}
+  C = u^{(\alpha)}[(j_\gamma)_{\gamma \in S(\alpha) \setminus \{\beta\}}, j_{\beta}].
+\end{equation*}
+This matrication is orthogonalized using a QR decomposition or SVD, yielding an orthogonal factor $Q$ and a non-orthogonal factor $R$ with $C = QR$.
+Now we apply the maxvol procedure to the orthogonal factor $Q$, yielding indices $\CI$.
+The core $\Bv^{(\alpha)}$ is replaced with $Q Q[\CI, :]^{-1}$ and the factor $Q[\CI, :] R$ is absorbed into  to the child core by computing the contraction
+\begin{equation*}
+  u^{(\beta)}[\dots \tilde{j_p}] \leftarrow u^{(\beta)}[\dots j_p] \cdot (Q[\CI, :] R)[\tilde{j_p} j_p]
+\end{equation*}
+Additionally, we assemble a \emph{parent index set} $\CI_p^{(\beta)}$ for the
+child by taking the tensor product of the partial index sets of all neighbours
+and selecting the entries corresponding to the maxvol indices $\CI$, i.e, taking
+\begin{equation*}
+  \CI_p^{(\beta)} \leftarrow 
+  \left( \left(\bigotimes_{\gamma \in S(\alpha) \setminus \{\beta\}} 
+  \CI^{(\beta)} \right) \otimes \CI_p^{(\alpha)} \right) [\CI]
+\end{equation*}
 After finishing the iteration over the children, the core is orthogonalized towards its parent and the maxvol prodcedure is used to assemble the \emph{partial index set}.
 For leaf nodes, the black-box function is queried at the tensor product of parent index set and the full index set along the associated dimension.
 The result is orthogonalized and the partial index set is updated using maxvol.
 
-
-
+\begin{remark}
+  When using SVD for the orthogonalization, the ranks can be truncated via thresholding on the singular values.
+  In practice this seemingly 
+\end{remark}
 
 \begin{algorithm}
-\caption{Initialization}
+\caption{Initialization for tree-cross algorithm}
 \begin{algorithmic}[1]
 \Require{Tree-based tensor $\Bv$}
 \Ensure{$\Bv$ with cores orthogonalized towards parent, nested index set $I^{(\alpha)}, {\alpha \in T_d}$}
@@ -135,7 +157,7 @@ The result is orthogonalized and the partial index set is updated using maxvol.
 \end{algorithm}
 
 \begin{algorithm}
-\caption{Cross algorithm for tree based tensors}
+\caption{Cross approximation algorithm for tree based tensors}
 
 \begin{algorithmic}[1]
 \Require Black-box function $f$ to evaluate the target tensor at arbitrary indices,
@@ -160,11 +182,11 @@ tree-based tensor $\Bv$, tolerance $\varepsilon$, iteration count $n_{iter}$
     \Comment{Eval at maxvol indices}
     \State $Q, R \leftarrow $ \Call{svd\_trunc}{$C$, $\varepsilon$}
     \Comment{Orthogonalize and truncate}
-    \State $I^{(\alpha)} \leftarrow $ \Call{maxvol}{$Q$}
+    \State $\CI^{(\alpha)} \leftarrow $ \Call{maxvol}{$Q$}
     \Comment{Compute maxvol indices and update partial index set}
-    \State $\Bv^{(\alpha)} \leftarrow Q Q[I^{(\alpha)}, :]^{-1}$
+    \State $\Bv^{(\alpha)} \leftarrow Q Q[\CI^{(\alpha)}, :]^{-1}$
     \Comment{Set maxvol rows to identity}
-    \State \Return $Q[I^{(\alpha)}, :] R$
+    \State \Return $Q[\CI^{(\alpha)}, :] R$
     \Comment{Non-orth factor to be cast to parent}
   \Else
     \For{$\beta \in S(\alpha)$}
@@ -173,15 +195,17 @@ tree-based tensor $\Bv$, tolerance $\varepsilon$, iteration count $n_{iter}$
       \Statex \Comment{Matrization with child index moved to the back}
       \State $Q, R \leftarrow$ \Call{svd\_trunc}{$C$, $\varepsilon / \sqrt{d}$}
       \Comment{Orthogonalize and truncate}
-      \State $I \leftarrow $ \Call{maxvol}{$Q$}
+      \State $\CI \leftarrow $ \Call{maxvol}{$Q$}
       \Comment{Compute maxvol indices}
-      \State $\Bv^{(\alpha)} \leftarrow Q Q[I, :]^{-1}$
+      \State $\Bv^{(\alpha)} \leftarrow Q Q[\CI, :]^{-1}$
       \Comment{Set maxvol rows to identity}
-      \State $R \leftarrow Q[I, :] R$
+      \State $R \leftarrow Q[\CI, :] R$
       \State $ \Bv^{(\beta)}[j_1 \dots j_{\# S(\beta)} \widehat{j_p}]
       \leftarrow \Bv^{(\beta)} [j_1 \dots j_{\# S(\beta)} j_p] R[\widehat{j_{p}}, j_{p}]$
       \Statex \Comment{Cast non-orth factor to child; Einstein sum convention}
-      \State $I_p^{(\beta)} \leftarrow \left( \left(\bigotimes_{\gamma \in S(\alpha) \setminus \{\beta\}} I_p^{(\beta)} \right) \otimes I_p^{(\alpha)} \right) [I]$
+      \State $\CI_p^{(\beta)} \leftarrow 
+      \left( \left(\bigotimes_{\gamma \in S(\alpha) \setminus \{\beta\}} 
+      \CI^{(\beta)} \right) \otimes \CI_p^{(\alpha)} \right) [\CI]$
       \Statex \Comment{Update parent index set of child; flat indexing of tensor product}
       \State $R  \leftarrow $ \Call{worker}{$\beta$}
       \Comment{recurse to child}
@@ -195,12 +219,12 @@ tree-based tensor $\Bv$, tolerance $\varepsilon$, iteration count $n_{iter}$
       \Comment{Matrization}
       \State $Q, R \leftarrow$ \Call{svd\_trunc}{$C$, $\varepsilon / \sqrt{d}$}
       \Comment{Orthogonalize and truncate}
-      \State $I \leftarrow $ \Call{maxvol}{$Q$}
+      \State $\CI \leftarrow $ \Call{maxvol}{$Q$}
       \Comment{Compute maxvol indices}
-      \State $\Bv^{(\alpha)} \leftarrow Q Q[I, :]^{-1}$
+      \State $\Bv^{(\alpha)} \leftarrow Q Q[\CI, :]^{-1}$
       \Comment{Set maxvol rows to identity}
-      \State $R \leftarrow Q[I, :] R$
-      \State $I^{(\alpha)} \leftarrow \left(\bigotimes_{\beta \in S(\alpha)} I^{(\beta)} \right) [I]$
+      \State $R \leftarrow Q[\CI, :] R$
+      \State $\CI^{(\alpha)} \leftarrow \left(\bigotimes_{\beta \in S(\alpha)} \CI^{(\beta)} \right) [\CI]$
       \Comment{Update partial index set; flat indexing of tensor product}
       \State return $R$
     \EndIf
@@ -210,9 +234,9 @@ tree-based tensor $\Bv$, tolerance $\varepsilon$, iteration count $n_{iter}$
 \end{algorithm}
 
 \begin{algorithm}
-\caption{Orthogonalize and truncate}
+\caption{Orthogonalize, truncate and maxvol cross approximation}
 \begin{algorithmic}[1]
-\Procedure{orth\_trunc}{$\alpha, \beta$}
+\Procedure{orth\_trunc\_maxvol}{$\alpha, \beta$}
   \State
 \EndProcedure
 \end{algorithmic}
