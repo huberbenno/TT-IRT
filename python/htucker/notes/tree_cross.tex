@@ -213,7 +213,7 @@ tree-based tensor $\Bv$, tolerance $\varepsilon$, iteration count $n_{iter}$
       \leftarrow \Bv^{(\alpha)} [j_1 \dots j_{i_c(\beta)} \dots j_{\# S(\alpha)} j_p] R[\widehat{j_{i_c(\beta)}} j_{i_c(\beta)}]$
       \Statex \Comment{Absorb non-orth factor from child; Einstein sum convention}
     \EndFor
-    \If{$\alpha \neq D$}
+    \If{$\alpha \neq D$} \Comment{only for non-root}
       \State $C
       \leftarrow \Bv^{(\alpha)}[j_1 \dots j_{\# S(\alpha)}, j_p]$
       \Comment{Matrization}
@@ -225,7 +225,7 @@ tree-based tensor $\Bv$, tolerance $\varepsilon$, iteration count $n_{iter}$
       \Comment{Set maxvol rows to identity}
       \State $R \leftarrow Q[\CI, :] R$
       \State $\CI^{(\alpha)} \leftarrow \left(\bigotimes_{\beta \in S(\alpha)} \CI^{(\beta)} \right) [\CI]$
-      \Comment{Update partial index set; flat indexing of tensor product}
+      \Statex \Comment{Update partial index set; flat indexing of tensor product}
       \State return $R$
     \EndIf
   \EndIf
@@ -389,7 +389,7 @@ This yields $\prod_{\beta \in S(\alpha)} r_\Bu$ blocks of size $r_u \times r_u$.
   \State $\Bu^{(D)}[\dots \widehat{j_p}] \leftarrow \Bu^{(D)}[\dots j_p] R[\widehat{j_p}, j_p]$
   \Comment{Cast non-orth factor to root node}
   \State Compute projections $(U^H A U)^{(<\{0\})}$, $(U^H b)^{(<\{0\})}$
-  \State \Call{worker}{$D$}
+  \State \Call{alsc\_worker}{$D$}
   \Comment{Start DFS traversal at root}
   \State $i \leftarrow i + 1$
 \Until{err $<$ tol or $i > n_{iter}$}
