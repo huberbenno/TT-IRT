@@ -289,15 +289,15 @@ class TreeBasedTensor:
           core = np.tensordot(core, r, axes=(-1,-1))
           core = core.reshape(old_shape + (-1,))
           core = np.swapaxes(core, -1, i)
+          self.cores[node] = core
 
         if not node.isroot:
           old_shape = core.shape[:-1]
           core = core.reshape(-1, core.shape[-1])
           u,s,v = svd_cut(core, tol=tol/np.sqrt(self.ndim), norm='fro')
           core = u.reshape(old_shape + (-1,))
+          self.cores[node] = core
           return np.diag(s) @ v
-
-        self.cores[node] = core
 
     worker_trunc(self.tree.root)
 
