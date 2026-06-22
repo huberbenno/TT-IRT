@@ -233,18 +233,46 @@ tree-based tensor $\Bv$, tolerance $\varepsilon$, iteration count $n_{iter}$
 \end{algorithmic}
 \end{algorithm}
 
-\begin{algorithm}
-\caption{Orthogonalize, truncate and maxvol cross approximation}
-\begin{algorithmic}[1]
-\Procedure{orth\_trunc\_maxvol}{$\alpha, \beta$}
-  \State
-\EndProcedure
-\end{algorithmic}
-\end{algorithm}
+% \begin{algorithm}
+% \caption{Orthogonalize, truncate and maxvol cross approximation}
+% \begin{algorithmic}[1]
+% \Procedure{orth\_trunc\_maxvol}{$\alpha, \beta$}
+%   \State
+% \EndProcedure
+% \end{algorithmic}
+% \end{algorithm}
 
+\subsection{Testing}
+
+Test with affine coefficient, 8 parametric dimensions.
+
+\begin{itemize}
+  \item Can observe convergence, fundamentally it works
+  \item Ranks after rounding seem to match exact ranks for affine case
+  \item Error seems to bottlenecked by 'kickrank', i.e. oversampling in the maxvol. Need substantial oversampling for good results.
+  \item Unlike TT cross does not discover exact low rank representation
+  \item TT cross does so with significantly fewer samples (TT cross only needs ~50000 samples to get to machine precision)
+\end{itemize}
+
+\begin{figure}
+\centering
+\includegraphics[width=.49\textwidth]{./figs/cross_convergence_eval.png}
+\includegraphics[width=.49\textwidth]{./figs/cross_convergence_iter.png}
+\caption{Cross testing, with linear tree}
+\end{figure}
+
+\begin{figure}
+\centering
+\includegraphics[width=.49\textwidth]{./figs/tree_comparison.png}
+\caption{Cross comparison with different tree structures}
+\end{figure}
+
+\FloatBarrier
 \newpage
 
 \section{ALS cross algorithm}
+
+In order to facilitate a more genric formulation of the algorithm, we consider a modified tree structure, where the special (physical) dimension is the 'parent' of the root node, see \cref{fig:alsc_modified_tree}.
 
 \begin{figure}[h!]
 \centering
@@ -263,6 +291,7 @@ tree-based tensor $\Bv$, tolerance $\varepsilon$, iteration count $n_{iter}$
     };
 \end{tikzpicture}
 \caption{Modified dimension tree $T_D$ with $d=5$ and special dimension 0}
+\label{fig:alsc_modified_tree}
 \end{figure}
 
 \subsection{Petrov-Galerkin projection}
