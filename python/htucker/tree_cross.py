@@ -48,7 +48,7 @@ class TreeCross:
         self.n_eval += eval.shape[0]
         eval = eval.reshape(n, r)
 
-        u,s,v = svd_cut(eval, tol=eps)
+        u,s,v = svd_cut(eval, tol=eps/np.sqrt(self.tensor.ndim), norm='fro')
         r = np.diag(s) @ v
         ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
         qmax = u[ind]
@@ -66,6 +66,7 @@ class TreeCross:
           old_shape = core.shape[:-1]
           core = core.reshape(-1, core.shape[-1])
           u,s,v = svd_cut(core, tol=eps/np.sqrt(self.tensor.ndim), norm='fro')
+          # u,s,v = np.linalg.svd(core, full_matrices=False)
           r = np.diag(s) @ v
           ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
           qmax = u[ind]
@@ -98,6 +99,7 @@ class TreeCross:
           core = core.reshape(-1, core.shape[-1])
 
           u,s,v = svd_cut(core, tol=eps/np.sqrt(self.tensor.ndim), norm='fro')
+          # print(f'{s[0]/s[-1]:.2e}')
           # u,s,v = np.linalg.svd(core, full_matrices=False)
           r = np.diag(s) @ v
           ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
@@ -129,7 +131,8 @@ class TreeCross:
       if verbose:
         print(
           f'swp: {str(iteration+1).rjust(len(str(n_iter)))}/{n_iter}',
-          f'f_evals={self.n_eval}'
+          f'f_evals={self.n_eval}',
+          # f'err_rel={er/nrm:.3e}'
           )
 
   def _init(self):
