@@ -101,13 +101,24 @@ and selecting the entries corresponding to the maxvol indices $\CI$, i.e, taking
   \left( \left(\bigotimes_{\gamma \in S(\alpha) \setminus \{\beta\}} 
   \CI^{(\beta)} \right) \otimes \CI_p^{(\alpha)} \right) [\CI]
 \end{equation*}
-After finishing the iteration over the children, the core is orthogonalized towards its parent and the maxvol prodcedure is used to assemble the \emph{partial index set}.
+After finishing the iteration over the children, the entries of the core can be updated by sampling at
+the maxvol indices coming from its neighbours due to the fact that we have suitably orthogonalized the rest
+of the tree. 
+Again, the maxvol prodcedure is used to assemble the \emph{partial index set}.
+
+\paragraph{Leaf nodes}
 For leaf nodes, the black-box function is queried at the tensor product of parent index set and the full index set along the associated dimension.
 The result is orthogonalized and the partial index set is updated using maxvol.
 
 \begin{remark}
   When using SVD for the orthogonalization, the ranks can be truncated via thresholding on the singular values.
-  In practice this seemingly 
+\end{remark}
+
+\begin{remark}
+  As described above, the interior nodes are updated via evaluation of the black-box
+  function only on upwards movement.
+  One could also do this on the downward path or even after returning from each child,
+  but this does not seem to benefit the convergence, only requiring additional evaluations.
 \end{remark}
 
 \begin{algorithm}
@@ -214,8 +225,10 @@ tree-based tensor $\Bv$, tolerance $\varepsilon$, iteration count $n_{iter}$
       \Statex \Comment{Absorb non-orth factor from child; Einstein sum convention}
     \EndFor
     \If{$\alpha \neq D$} \Comment{only for non-root}
+      \State $C \leftarrow f(\bigotimes_{\beta \in S(\alpha)} I^{(\beta)} \otimes I_p^{(\alpha)})$
+      \Comment{Eval at maxvol indices}
       \State $C
-      \leftarrow \Bv^{(\alpha)}[j_1 \dots j_{\# S(\alpha)}, j_p]$
+      \leftarrow C[j_1 \dots j_{\# S(\alpha)}, j_p]$
       \Comment{Matrization}
       \State $Q, R \leftarrow$ \Call{svd\_trunc}{$C$, $\varepsilon / \sqrt{d}$}
       \Comment{Orthogonalize and truncate}
