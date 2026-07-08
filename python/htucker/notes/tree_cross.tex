@@ -257,27 +257,66 @@ tree-based tensor $\Bv$, tolerance $\varepsilon$, iteration count $n_{iter}$
 
 \subsection{Testing}
 
-Test with affine coefficient, 8 parametric dimensions.
+\subsubsection{Exact low rank}
+
+Test with affine parameter
+\begin{equation*}
+  \Bv(j_0, j_1, \dots, j_d)
+  = \sum_{k=1}^d k^{-2} j_k \psi_k(j_0)
+  , \qquad \psi_k \colon \R \rightarrow \R
+\end{equation*}
+for $d=20$, $n_{\{k\}} = 5$ for $k=1, \dots, d$, $n_{0} = 100$.
 
 \begin{itemize}
-  \item Can observe convergence, fundamentally it works
-  \item Ranks after rounding seem to match exact ranks for affine case
-  \item Error seems to bottlenecked by 'kickrank', i.e. oversampling in the maxvol. Need substantial oversampling for good results.
-  \item Unlike TT cross does not discover exact low rank representation
-  \item TT cross does so with significantly fewer samples (TT cross only needs ~50000 samples to get to machine precision)
+  \item See \cref{fig:cross_affine}
+  \item efficient recovery of exact representation up to rounding errors: \num{30000} evaluations for a tensor with \num{9.5e15} entries
+  \item balanced binary tree better than linear tree
+  \item outperforms ttpy \texttt{rect\_cross} in terms of samples, which uses \num{530000} samples for exact recovery, even with linear tree
 \end{itemize}
 
 \begin{figure}
 \centering
-\includegraphics[width=.49\textwidth]{./figs/cross_convergence_eval.png}
-\includegraphics[width=.49\textwidth]{./figs/cross_convergence_iter.png}
-\caption{Cross testing, with linear tree}
+\begin{subfigure}{.49\textwidth}
+  \includegraphics[width=\textwidth]{./figs/cross/cross_affine_linear_tree.png}
+  \caption{linear tree}
+\end{subfigure}
+\begin{subfigure}{.49\textwidth}
+  \includegraphics[width=\textwidth]{./figs/cross/cross_affine_balanced_binary_tree.png}
+  \caption{balanced binary tree}
+\end{subfigure}
+\caption{Cross testing with tensor of exact low rank from affine parameter}
+\label{fig:cross_affine}
 \end{figure}
+
+\subsubsection{Approximate low rank}
+
+Test with full rank parameter with algebraic decay
+\begin{equation*}
+  \Bv(j_0, j_1, \dots, j_d)
+  = \exp \left( \sum_{k=1}^d k^{-2} j_k \psi_k(j_0) \right)
+  , \qquad \psi_k \colon \R \rightarrow \R
+\end{equation*}
+for $d=20$, $n_{\{k\}} = 5$ for $k=1, \dots, d$, $n_{0} = 100$.
+
+\begin{itemize}
+  \item See \cref{fig:cross_exp}
+  \item proper convergence
+  \item no pronounced advantage of balanced binary tree compared to linear tree
+  \item still outperforms ttpy \texttt{rect\_cross} in terms of samples, which uses $\sim\num{1e6} $ samples for the same error
+\end{itemize}
 
 \begin{figure}
 \centering
-\includegraphics[width=.49\textwidth]{./figs/tree_comparison.png}
-\caption{Cross comparison with different tree structures}
+\begin{subfigure}{.49\textwidth}
+  \includegraphics[width=\textwidth]{./figs/cross/cross_exp_linear_tree2.png}
+  \caption{linear tree}
+\end{subfigure}
+\begin{subfigure}{.49\textwidth}
+  \includegraphics[width=\textwidth]{./figs/cross/cross_exp_balanced_binary_tree.png}
+  \caption{balanced binary tree}
+\end{subfigure}
+\caption{Cross testing with tensor of full rank with decay, target error \num{1e-4}}
+\label{fig:cross_exp}
 \end{figure}
 
 \FloatBarrier
