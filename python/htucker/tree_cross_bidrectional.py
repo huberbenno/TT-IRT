@@ -1,7 +1,7 @@
 import numpy as np
 
 from typing import Callable
-from tree_tensor import TreeBasedTensor
+from python.htucker.tree_tensor.tree_tensor import TreeBasedTensor
 from tree import NodeIndexedList
 from maxvolpy.maxvol import rect_maxvol, svd_cut
 

@@ -1,9 +1,8 @@
 import numpy as np
-import torch
 
-from tree_tensor_torch import TreeBasedTensor, svd_cut_torch
+from python.htucker.tree_tensor.tree_tensor import TreeBasedTensor
 from tree import NodeIndexedList, TreeNode
-from maxvolpy.maxvol import rect_maxvol
+from maxvolpy.maxvol import rect_maxvol, svd_cut
 import copy
 from scipy.sparse import csr_matrix, issparse
 
@@ -26,12 +25,7 @@ class TreeALSCross:
     self.verbose = verbose
     self.kickrank = kickrank
 
-    self.dtype = A_params[0].dtype
-    assert all(A_param.dtype == self.dtype for A_param in A_params), 'Incompatible data types.'
-    assert all(b_param.dtype == self.dtype for b_param in b_params), 'Incompatible data types.'
-
-    self.rng_torch = torch.Generator()
-    self.rng_numpy = np.random.default_rng()
+    self.rng = np.random.default_rng()
 
     # tree and shape must be the same for all parameters (except spatial dim)
     # currently not checked
@@ -59,31 +53,24 @@ class TreeALSCross:
     self.root_node.children = tuple(self.root_node.children[1:])
 
     for k in range(self.M_A):
-      self.A_params[k].cores[self.root_node] = torch.moveaxis(self.A_params[k].cores[self.root_node].squeeze(dim=-1), 0,-1)
+      self.A_params[k].cores[self.root_node] = np.moveaxis(self.A_params[k].cores[self.root_node].squeeze(axis=-1), 0,-1)
     for k in range(self.M_b):
-      self.b_params[k].cores[self.root_node] = torch.moveaxis(self.b_params[k].cores[self.root_node].squeeze(dim=-1), 0,-1)
+      self.b_params[k].cores[self.root_node] = np.moveaxis(self.b_params[k].cores[self.root_node].squeeze(axis=-1), 0,-1)
 
     # init matrix and rhs variables
-    A0_cores = [A_param.cores[A_param.tree.dim2id(0)].numpy(force=True) for A_param in self.A_params]
-    b0_cores = [b_param.cores[b_param.tree.dim2id(0)].numpy(force=True) for b_param in self.b_params]
-    A0 = assem_solve_fun.matrix(A0_cores)
-    for k, A0k in enumerate(A0):
-      A0[k] = [torch.from_numpy(a0k).to(dtype=self.dtype) for a0k in A0k]
-    self.A0 = A0
-    F0 = assem_solve_fun.rhs(b0_cores)
-    for k, F0k in enumerate(F0):
-      F0[k] = torch.from_numpy(np.hstack(F0k)).to(dtype=self.dtype)
-    self.F0 = F0
-
+    A0_cores = [A_param.cores[A_param.tree.dim2id(0)] for A_param in self.A_params]
+    b0_cores = [b_param.cores[b_param.tree.dim2id(0)] for b_param in self.b_params]
+    self.A0 = assem_solve_fun.matrix(A0_cores)
+    self.F0 = [np.hstack(F0k) for F0k in assem_solve_fun.rhs(b0_cores)]
     self.Nx = self.A0[0][0].shape[1]
 
     if rinit > 0:
-      self.u = TreeBasedTensor.randn(tree=self.tree, shape=(self.Nx,) + self.shape, rank=rinit, dtype=self.dtype)
+      self.u = TreeBasedTensor.randn(tree=self.tree, shape=(self.Nx,) + self.shape, rank=rinit)
       self.u, indexset_list, indexset_dims_list, maxvol_ind_list = self._orth_towards_0(self.u)
-      self.u.cores[self.root_node] = torch.moveaxis(torch.squeeze(self.u.cores[self.root_node], dim=-1), 0,-1)
+      self.u.cores[self.root_node] = np.moveaxis(np.squeeze(self.u.cores[self.root_node], axis=-1), 0,-1)
     else:
-      cores = NodeIndexedList([torch.randn(c.shape, generator=self.rng_torch, dtype=self.dtype) for c in self.A_params[0].cores])
-      cores[self.tree.dim2leaf(0)] = torch.randn((self.Nx, cores[self.tree.dim2leaf(0)].shape[1]), generator=self.rng_torch, dtype=self.dtype)
+      cores = NodeIndexedList([self.rng.standard_normal(c.shape) for c in self.A_params[0].cores])
+      cores[self.tree.dim2leaf(0)] = self.rng.standard_normal((self.Nx, cores[self.tree.dim2leaf(0)].shape[1]))
       self.u = TreeBasedTensor(cores, self.tree)
 
     # init right proj UA and Ub (eval at maxvol)
@@ -113,17 +100,16 @@ class TreeALSCross:
       # construct coeff
       arg = [[None] * self.M_A, [None] * self.M_b]
       for k in range(self.M_A):
-        arg[0][k] = torch.tensordot(self.A_params[k].cores[special], self.UA[k][self.tree.root], dims=((-1,),(-1,)))
+        arg[0][k] = np.tensordot(self.A_params[k].cores[special], self.UA[k][self.tree.root], axes=(-1,-1))
       for k in range(self.M_b):
-        arg[1][k] = torch.tensordot(self.b_params[k].cores[special], self.Ub[k][self.tree.root], dims=((-1,),(-1,)))
+        arg[1][k] = np.tensordot(self.b_params[k].cores[special], self.Ub[k][self.tree.root], axes=(-1,-1))
 
       U0 = self.assem_solve_fun.solve(arg)
       U0 = np.hstack(U0)
-      U0 = torch.from_numpy(U0).to(dtype=self.dtype)
 
       dx = 1
       if U_prev is not None:
-        dx = torch.linalg.norm(U0 - U_prev) / torch.linalg.norm(U0)
+        dx = np.linalg.norm(U0 - U_prev) / np.linalg.norm(U0)
 
       self.max_dx = max(self.max_dx, dx)
       if self.verbose > 1:
@@ -131,67 +117,66 @@ class TreeALSCross:
 
       # truncate U0
       # TODO maybe use cheaper option
-      U0, s,v = svd_cut_torch(U0, tol/np.sqrt(self.tree.order))
-      v = torch.diag(s) @ v
+      U0, s,v = svd_cut(U0, tol/np.sqrt(self.tree.order))
+      v = np.diag(s) @ v
       self.u.cores[special] = U0
       # cast non-orth factor to next core, which is root as child
-      self.u.cores[self.root_node] = torch.tensordot(self.u.cores[self.tree.root], v, dims=((-1,),(-1,)))
+      self.u.cores[self.root_node] = np.tensordot(self.u.cores[self.tree.root], v, axes=(-1,-1))
 
       ## rank adaption
       if self.kickrank > 0:
         # compute residual at indices
         rz = self.ZA[0][self.root_node].shape[0]
-        Z0 = torch.zeros((self.Nx, rz), dtype=self.dtype)
+        Z0 = np.zeros((self.Nx, rz))
         for k in range(self.M_A):
-          cru = torch.tensordot(U0 @ v, self.ZU[self.root_node], dims=((-1,),(-1,)))
+          cru = np.tensordot(U0 @ v, self.ZU[self.root_node], axes=(-1,-1))
           for l in range(rz):
             if issparse(self.A0[k][0]):
-              raise NotImplementedError
               crA = csr_matrix((self.Nx, self.Nx))
             else:
-              crA = torch.zeros((self.Nx, self.Nx), dtype=self.dtype)
+              crA = np.zeros((self.Nx, self.Nx))
             for j, A0_j in enumerate(self.A0[k]):
               crA += A0_j * self.ZA[k][self.root_node][l,j]
 
-          Z0[:,l] += torch.ravel(crA @ cru[:,l])
+          Z0[:,l] += np.ravel(crA @ cru[:,l])
 
         for k in range(self.M_b):
-          Z0 -= torch.tensordot(self.F0[k], self.Zb[k][self.root_node], dims=((-1,),(-1,)))
+          Z0 -= np.tensordot(self.F0[k], self.Zb[k][self.root_node], axes=(-1,-1))
 
         # QR residual
-        Z0 = torch.linalg.qr(Z0)[0]
+        Z0 = np.linalg.qr(Z0)[0]
         # append residual to U core
-        cru = torch.hstack((U0, Z0))
+        cru = np.hstack((U0, Z0))
 
         # QR enriched core
-        U0, v = torch.linalg.qr(cru)
+        U0, v = np.linalg.qr(cru)
         self.u.cores[special] = U0
         # cast non-orth factor to next core, which is root as child
         ru = self.u.cores[self.root_node].shape[-1]
-        self.u.cores[self.root_node] = torch.tensordot(self.u.cores[self.root_node], v[:, :ru], dims=((-1,),(-1,)))
+        self.u.cores[self.root_node] = np.tensordot(self.u.cores[self.root_node], v[:, :ru], axes=(-1,-1))
 
       ## projection onto solution basis U0
       for k in range(self.M_A):
         proj = []
         for j, A0_j in enumerate(self.A0[k]):
-          proj += [torch.conj(U0.T) @ A0_j @ U0]
+          proj += [np.conjugate(U0.T) @ A0_j @ U0]
 
-        self.UAU[k][special] = torch.stack(proj, dim=-1)
+        self.UAU[k][special] = np.stack(proj, axis=-1)
 
       for k in range(self.M_b):
-        self.UF[k][special] = (torch.conj(U0.T) @ self.F0[k])
+        self.UF[k][special] = (np.conjugate(U0.T) @ self.F0[k])
 
       ## Project onto residual
       if self.kickrank > 0:
         for k in range(self.M_A):
           proj = []
           for j, A0_j in enumerate(self.A0[k]):
-            proj += [torch.conj(Z0.T) @ self.A0[k][j] @ U0]
+            proj += [np.conjugate(Z0.T) @ self.A0[k][j] @ U0]
 
-          self.ZUA[k][special] = torch.stack(proj, dim=-1)
+          self.ZUA[k][special] = np.stack(proj, axis=-1)
 
         for k in range(self.M_b):
-          self.ZUb[k][special] = torch.conj(Z0.T) @ self.F0[k]
+          self.ZUb[k][special] = np.conjugate(Z0.T) @ self.F0[k]
 
       ## traverse tree
       self._als_interior_worker(self.root_node)
@@ -203,7 +188,7 @@ class TreeALSCross:
   def get_tensor(self):
     tensor = TreeBasedTensor(self.u)
     root_core = tensor.cores[tensor.tree.root]
-    root_core = torch.unsqueeze(torch.moveaxis(root_core, -1, 0), -1)
+    root_core = np.expand_dims(np.moveaxis(root_core, -1, 0), -1)
     tensor.cores[tensor.tree.root] = root_core
     return tensor
 
@@ -219,20 +204,20 @@ class TreeALSCross:
 
       # orth and truncate solution core towards child
       core = self.u.cores[node]
-      core = torch.moveaxis(core, child_ind, -1)
+      core = np.moveaxis(core, child_ind, -1)
       old_shape = core.shape
       core = core.reshape(-1, core.shape[-1])
-      cru,s,v = svd_cut_torch(core, tol=self.tol/np.sqrt(self.tree.order))
+      cru,s,v = svd_cut(core, tol=self.tol/np.sqrt(self.tree.order))
       # cast non orth factor to child
-      v = torch.diag(s) @ v
-      self.u.cores[child] = torch.tensordot(self.u.cores[child], v, dims=((-1,),(-1,)))
+      v = np.diag(s) @ v
+      self.u.cores[child] = np.tensordot(self.u.cores[child], v, axes=(-1,-1))
 
       ## AMEn rank adaption
       if self.kickrank > 0:
         U = (cru @ v).reshape(old_shape[:-1] + (-1,))
-        U = torch.moveaxis(U, -1, child_ind)
-        crz = torch.zeros(1, dtype=self.dtype)
-        crz_new = torch.zeros(1, dtype=self.dtype)
+        U = np.moveaxis(U, -1, child_ind)
+        crz = np.zeros(1)
+        crz_new = np.zeros(1)
         # Au at res indices
         for k in range(self.M_A):
           crC = self.A_params[k].cores[node]
@@ -251,7 +236,7 @@ class TreeALSCross:
 
           einsum_args += [self.UAU[k][node.parent], np.arange(3*(offset-1), 3*offset)]
           einsum_args += [np.arange(0,3*offset,3)]
-          crz = crz + torch.einsum(*einsum_args)
+          crz = crz + np.einsum(*einsum_args, optimize=True)
 
           # update
           einsum_args = [
@@ -266,7 +251,7 @@ class TreeALSCross:
 
           einsum_args += [self.ZUA[k][node.parent], np.arange(3*(offset-1), 3*offset)]
           einsum_args += [np.arange(0,3*offset,3)]
-          crz_new = crz_new + torch.einsum(*einsum_args)
+          crz_new = crz_new + np.einsum(*einsum_args, optimize=True)
 
         # and corresponding RHS
         for k in range(self.M_b):
@@ -284,7 +269,7 @@ class TreeALSCross:
 
           einsum_args += [self.UF[k][node.parent], [2*(offset-1), 2*offset]]
           einsum_args += [np.arange(0, 2*offset, 2)]
-          crz -= torch.einsum(*einsum_args)
+          crz -= np.einsum(*einsum_args, optimize=True)
 
           # update residual
           einsum_args = [
@@ -297,24 +282,24 @@ class TreeALSCross:
 
           einsum_args += [self.ZUb[k][node.parent], [2*(offset-1), 2*offset]]
           einsum_args += [np.arange(0, 2*offset, 2)]
-          crz_new -= torch.einsum(*einsum_args)
+          crz_new -= np.einsum(*einsum_args, optimize=True)
 
         # enrich by combining solution and residual
-        crz = torch.moveaxis(crz, child_ind, -1)
+        crz = np.moveaxis(crz, child_ind, -1)
         crz = crz.reshape(-1, crz.shape[-1])
-        cru = torch.concatenate((cru, crz), axis=-1)
-        cru, v = torch.linalg.qr(cru)
+        cru = np.concatenate((cru, crz), axis=-1)
+        cru, v = np.linalg.qr(cru)
         # cast non orth factor to child
         ru = self.u.cores[child].shape[-1]
-        self.u.cores[child] = torch.tensordot(self.u.cores[child], v[:, :ru], dims=((-1,),(-1,)))
+        self.u.cores[child] = np.tensordot(self.u.cores[child], v[:, :ru], axes=(-1,-1))
 
       ## update core
       core = cru.reshape(old_shape[:-1] + (-1,))
-      self.u.cores[node] = torch.moveaxis(core, -1, child_ind)
+      self.u.cores[node] = np.moveaxis(core, -1, child_ind)
 
       ## update interface projections
       cru = self.u.cores[node]
-      cru_conj = torch.conj(cru)
+      cru_conj = np.conj(cru)
 
       # matrix projections
       for k in range(self.M_A):
@@ -333,7 +318,7 @@ class TreeALSCross:
 
         einsum_args += [self.UAU[k][node.parent], np.arange(ind_end-3, ind_end)]
         einsum_args += [np.arange(3*child_ind, 3*(child_ind+1))]
-        self.UAU[k][node] = torch.einsum(*einsum_args)
+        self.UAU[k][node] = np.einsum(*einsum_args, optimize=True)
 
       # RHS projections
       for k in range(self.M_b):
@@ -351,18 +336,18 @@ class TreeALSCross:
         einsum_args += [self.UF[k][node.parent], np.arange(ind_end-2, ind_end)]
         einsum_args += [np.arange(2*child_ind, 2*(child_ind+1))]
 
-        self.UF[k][node] = torch.einsum(*einsum_args)
+        self.UF[k][node] = np.einsum(*einsum_args, optimize=True)
 
       ## projections with the residual
       if self.kickrank > 0:
-        crz_new = torch.moveaxis(crz_new, child_ind, -1)
+        crz_new = np.moveaxis(crz_new, child_ind, -1)
         old_shape = crz_new.shape[:-1]
         crz_new = crz_new.reshape(-1, crz_new.shape[-1])
-        crz_new = torch.linalg.qr(crz_new)[0]
+        crz_new = np.linalg.qr(crz_new)[0]
         crz_new = crz_new.reshape(old_shape + (-1,))
-        crz_new = torch.moveaxis(crz_new, -1, child_ind)
+        crz_new = np.moveaxis(crz_new, -1, child_ind)
 
-        crz_new_conj = torch.conj(crz_new)
+        crz_new_conj = np.conjugate(crz_new)
 
         for k in range(self.M_A):
           ind_end = 3*(node.n_children+1)
@@ -377,7 +362,7 @@ class TreeALSCross:
 
           einsum_args += [self.ZUA[k][node.parent], np.arange(ind_end-3, ind_end)]
           einsum_args += [np.arange(3*child_ind, 3*(child_ind+1))]
-          self.ZUA[k][node] = torch.einsum(*einsum_args)
+          self.ZUA[k][node] = np.einsum(*einsum_args, optimize=True)
 
         for k in range(self.M_b):
           crC = self.b_params[k].cores[node]
@@ -394,7 +379,7 @@ class TreeALSCross:
           einsum_args += [self.ZUb[k][node.parent], np.arange(ind_end-2, ind_end)]
           einsum_args += [np.arange(2*child_ind, 2*(child_ind+1))]
 
-          self.ZUb[k][node] = torch.einsum(*einsum_args)
+          self.ZUb[k][node] = np.einsum(*einsum_args, optimize=True)
 
         # TODO update Zb, ZA ?
 
@@ -407,7 +392,7 @@ class TreeALSCross:
     #### upwards move
     # solve
     dx = self._solve_reduced(node)
-    self.max_dx = max(self.max_dx, dx.item())
+    self.max_dx = max(self.max_dx, dx)
     if self.verbose > 1:
       print(f'    node {node.id} up'.ljust(20), f'dx={dx:.2e}')
 
@@ -415,14 +400,14 @@ class TreeALSCross:
     core = self.u.cores[node]
     old_shape = core.shape
     core = core.reshape(-1, core.shape[-1])
-    cru, s, v = svd_cut_torch(core, tol=self.tol/np.sqrt(self.tree.order))
-    v = torch.diag(s) @ v
+    cru, s, v = svd_cut(core, tol=self.tol/np.sqrt(self.tree.order))
+    v = np.diag(s) @ v
 
     ## rank adaption
     if self.kickrank > 0:
       U = (cru @ v).reshape(old_shape[:-1] + (-1,))
-      crz = torch.zeros(1, dtype=self.dtype)
-      crz_new = torch.zeros(1, dtype=self.dtype)
+      crz = np.zeros(1)
+      crz_new = np.zeros(1)
 
       for k in range(self.M_A):
         crC = self.A_params[k].cores[node]
@@ -438,7 +423,7 @@ class TreeALSCross:
 
         einsum_args += [self.ZUA[k][node.parent], [2*offset, offset-1, 2*offset-1]]
         einsum_args += [np.concatenate([np.arange(offset-1), [2*offset]])]
-        crz = crz + torch.einsum(*einsum_args)
+        crz = crz + np.einsum(*einsum_args, optimize=True)
 
         # update
         einsum_args = [
@@ -451,7 +436,7 @@ class TreeALSCross:
 
         einsum_args += [self.ZUA[k][node.parent], np.arange(3*(offset-1), 3*offset)]
         einsum_args += [np.arange(0,3*offset,3)]
-        crz_new = crz_new + torch.einsum(*einsum_args)
+        crz_new = crz_new + np.einsum(*einsum_args, optimize=True)
 
       for k in range(self.M_b):
         crC = self.b_params[k].cores[node]
@@ -464,7 +449,7 @@ class TreeALSCross:
 
         einsum_args += [self.ZUb[k][node.parent], [2*(offset-1), 2*offset]]
         einsum_args += [np.arange(0, 2*offset, 2)]
-        crz -= torch.einsum(*einsum_args)
+        crz -= np.einsum(*einsum_args, optimize=True)
 
         # update residual
         einsum_args = [crC, np.arange(1, 2*offset, 2)]
@@ -473,20 +458,19 @@ class TreeALSCross:
 
         einsum_args += [self.ZUb[k][node.parent], [2*offset-2, 2*offset-1]]
         einsum_args += [np.arange(0, 2*offset, 2)]
-        crz_new -= torch.einsum(*einsum_args)
+        crz_new -= np.einsum(*einsum_args, optimize=True)
 
       # enrich core
       ru = cru.shape[-1]
       crz = crz.reshape(-1, crz.shape[-1])
-      cru = torch.concatenate((cru, crz), axis=-1)
+      cru = np.concatenate((cru, crz), axis=-1)
       # orth
-      cru, rv = torch.linalg.qr(cru)
+      cru, rv = np.linalg.qr(cru)
       v = rv[:,:ru] @ v
 
 
     # maxvol
-    ind, C = rect_maxvol(cru.numpy(force=True), maxK=cru.shape[1])
-    C = torch.from_numpy(C).to(dtype=self.dtype)
+    ind, C = rect_maxvol(cru, maxK=cru.shape[1])
     qmax = cru[ind]
 
     # update core
@@ -499,31 +483,31 @@ class TreeALSCross:
     else:
       ci = node.child_ind
 
-    core = torch.tensordot(self.u.cores[node.parent], qmax @ v, dims=((ci,), (-1,)))
-    self.u.cores[node.parent] = torch.moveaxis(core, -1, ci)
+    core = np.tensordot(self.u.cores[node.parent], qmax @ v, axes=(ci, -1))
+    self.u.cores[node.parent] = np.moveaxis(core, -1, ci)
 
     ## update right interface projection (sample param on U indices)
     for k in range(self.M_A):
       tmp = self.A_params[k].cores[node]
       for child in node.children:
-        tmp = torch.tensordot(tmp, self.UA[k][child], dims=((0,), (-1,)))
+        tmp = np.tensordot(tmp, self.UA[k][child], axes=(0, -1))
 
-      tmp = torch.moveaxis(tmp, 0, -1)
+      tmp = np.moveaxis(tmp, 0, -1)
       tmp = tmp.reshape(-1, tmp.shape[-1])
       self.UA[k][node] = tmp[ind]
 
     for k in range(self.M_b):
       tmp = self.b_params[k].cores[node]
       for child in node.children:
-        tmp = torch.tensordot(tmp, self.Ub[k][child], dims=((0,), (-1,)))
+        tmp = np.tensordot(tmp, self.Ub[k][child], axes=(0, -1))
 
-      tmp = torch.moveaxis(tmp, 0, -1)
+      tmp = np.moveaxis(tmp, 0, -1)
       tmp = tmp.reshape(-1, tmp.shape[-1])
       self.Ub[k][node] = tmp[ind]
 
     ## update left interface projection
     cru = self.u.cores[node]
-    cru_conj = torch.conj(cru)
+    cru_conj = np.conj(cru)
 
     # Matrix projections
     for k in range(self.M_A):
@@ -540,7 +524,7 @@ class TreeALSCross:
         einsum_args += [self.UAU[k][child], np.arange(3*i, 3*(i+1))]
 
       einsum_args += [np.arange(ind_end - 3, ind_end)]
-      self.UAU[k][node] = torch.einsum(*einsum_args)
+      self.UAU[k][node] = np.einsum(*einsum_args, optimize=True)
 
     # RHS projections
     for k in range(self.M_b):
@@ -555,7 +539,7 @@ class TreeALSCross:
         einsum_args += [self.UF[k][child], np.arange(2*i, 2*(i+1))]
 
       einsum_args += [np.arange(ind_end - 2, ind_end)]
-      self.UF[k][node] = torch.einsum(*einsum_args)
+      self.UF[k][node] = np.einsum(*einsum_args, optimize=True)
 
     # TODO update index set (for index based assem_solve_fun)
 
@@ -563,13 +547,12 @@ class TreeALSCross:
     if self.kickrank > 0:
       old_shape = crz_new.shape
       crz_new = crz_new.reshape(-1, crz_new.shape[-1])
-      crz_new = torch.linalg.qr(crz_new)[0]
+      crz_new = np.linalg.qr(crz_new)[0]
 
-      crz_new_conj = torch.conj(crz_new).reshape(old_shape)
+      crz_new_conj = np.conjugate(crz_new).reshape(old_shape)
 
       #sample at res indices
-      ind, C = rect_maxvol(crz_new.numpy(force=True), maxK=crz_new.shape[1])
-      C = torch.from_numpy(C).to(dtype=self.dtype)
+      ind, C = rect_maxvol(crz_new, maxK=crz_new.shape[1])
 
       offset = node.n_children+1
       einsum_args = [self.u.cores[node], np.arange(offset, 2*offset)]
@@ -577,7 +560,7 @@ class TreeALSCross:
         einsum_args += [self.ZU[child], [ci, offset+ci]]
 
       einsum_args += [np.concatenate((np.arange(offset-1), [2*offset-1]))]
-      ZU = torch.einsum(*einsum_args)
+      ZU = np.einsum(*einsum_args, optimize=True)
       ZU = ZU.reshape(-1, ZU.shape[-1])
       self.ZU[node] = ZU[ind]
 
@@ -593,14 +576,14 @@ class TreeALSCross:
           einsum_args += [self.ZUA[k][child], np.arange(3*ci, 3*(ci+1))]
 
         einsum_args += [np.arange(3*offset-3, 3*offset)]
-        self.ZUA[k][node] = torch.einsum(*einsum_args)
+        self.ZUA[k][node] = np.einsum(*einsum_args, optimize=True)
 
         einsum_args = [crC, np.arange(offset, 2*offset)]
         for ci, child in enumerate(node.children):
           einsum_args += [self.ZA[k][child], [ci, offset+ci]]
 
         einsum_args += [np.concatenate((np.arange(offset-1), [2*offset-1]))]
-        ZA = torch.einsum(*einsum_args)
+        ZA = np.einsum(*einsum_args, optimize=True)
         ZA = ZA.reshape(-1, ZA.shape[-1])
         self.ZA[k][node] = ZA[ind]
 
@@ -615,40 +598,40 @@ class TreeALSCross:
           einsum_args += [self.ZUb[k][child], [2*ci, 1+2*ci]]
 
         einsum_args += [np.arange(2*offset-2, 2*offset)]
-        self.ZUb[k][node] = torch.einsum(*einsum_args)
+        self.ZUb[k][node] = np.einsum(*einsum_args, optimize=True)
 
         einsum_args = [crC, np.arange(offset, 2*offset)]
         for ci, child in enumerate(node.children):
           einsum_args += [self.Zb[k][child], [ci, offset+ci]]
 
         einsum_args += [np.concatenate((np.arange(offset-1), [2*offset-1]))]
-        Zb = torch.einsum(*einsum_args)
+        Zb = np.einsum(*einsum_args, optimize=True)
         Zb = Zb.reshape(-1, Zb.shape[-1])
         self.Zb[k][node] = Zb[ind]
 
 
   def _als_leaf_worker(self, node: TreeNode):
     # compute RHS projection
-    crF = torch.zeros(1, dtype=self.dtype)
+    crF = np.zeros(1)
     for k in range(self.M_b):
       crC = self.b_params[k].cores[node]
-      crF = crF + torch.tensordot(crC, self.UF[k][node.parent], dims=((1,), (-1,)))
+      crF = crF + np.tensordot(crC, self.UF[k][node.parent], axes=(1,-1))
 
     # assemble and solve blocks
     cru = []
     for j in range(self.u.shape[node.dim]):
-      Ai = torch.zeros(1, dtype=self.dtype)
+      Ai = np.zeros(1)
       for k in range(self.M_A):
         crC = self.A_params[k].cores[node]
-        Ai = Ai + torch.tensordot(self.UAU[k][node.parent], crC[j], dims=((-1,), (0,)))
+        Ai = Ai + np.tensordot(self.UAU[k][node.parent], crC[j], axes=(-1, 0))
 
-      cru += [torch.linalg.solve(Ai, crF[j])]
+      cru += [np.linalg.solve(Ai, crF[j])]
 
-    cru = torch.hstack(cru)
+    cru = np.hstack(cru)
 
     # check error
-    dx = torch.linalg.norm(cru.flatten() - self.u.cores[node].flatten()) / torch.linalg.norm(cru)
-    self.max_dx = max(self.max_dx, dx.item())
+    dx = np.linalg.norm(cru.flatten() - self.u.cores[node].flatten()) / np.linalg.norm(cru)
+    self.max_dx = max(self.max_dx, dx)
     if self.verbose > 1:
       print(f'    node {node.id} leaf'.ljust(20), f'dx={dx:.2e}')
 
@@ -658,13 +641,13 @@ class TreeALSCross:
     # orth and truncate
     core = self.u.cores[node]
     old_shape = core.shape[:-1]
-    cru, s, v = svd_cut_torch(core, tol=self.tol/np.sqrt(self.tree.order))
-    v = torch.diag(s) @ v
+    cru, s, v = svd_cut(core, tol=self.tol/np.sqrt(self.tree.order))
+    v = np.diag(s) @ v
 
     ## rank adaption
     if self.kickrank > 0:
       U = (cru @ v).reshape(old_shape + (-1,))
-      crz = torch.zeros(1, dtype=self.dtype)
+      crz = np.zeros(1)
 
       for k in range(self.M_A):
         einsum_args = [
@@ -673,7 +656,7 @@ class TreeALSCross:
           self.ZUA[k][node.parent], [3,1,2],
           [0,3]
           ]
-        crz = crz + torch.einsum(*einsum_args)
+        crz = crz + np.einsum(*einsum_args, optimize=True)
 
       for k in range(self.M_b):
         einsum_args = [
@@ -681,19 +664,18 @@ class TreeALSCross:
           self.ZUb[k][node.parent], [2,1],
           [0,2]
           ]
-        crz -= torch.einsum(*einsum_args)
+        crz -= np.einsum(*einsum_args, optimize=True)
 
       # enrich core
       ru = cru.shape[-1]
       crz = crz.reshape(-1, crz.shape[-1])
-      cru = torch.concatenate((cru, crz), dim=-1)
+      cru = np.concatenate((cru, crz), axis=-1)
       # orth
-      cru, rv = torch.linalg.qr(cru)
+      cru, rv = np.linalg.qr(cru)
       v = rv[:,:ru] @ v
 
     # maxvol
-    ind, C = rect_maxvol(cru.numpy(force=True), maxK=cru.shape[1])
-    C = torch.from_numpy(C).to(dtype=self.dtype)
+    ind, C = rect_maxvol(cru, maxK=cru.shape[1])
     qmax = cru[ind]
 
     # update core
@@ -705,8 +687,8 @@ class TreeALSCross:
     else:
       ci = node.child_ind
     core = self.u.cores[node.parent]
-    core = torch.tensordot(core, qmax @ v, dims=((ci,), (-1,)))
-    self.u.cores[node.parent] = torch.moveaxis(core, -1, ci)
+    core = np.tensordot(core, qmax @ v, axes=(ci, -1))
+    self.u.cores[node.parent] = np.moveaxis(core, -1, ci)
 
     # update right interface projection (sample param on U indices)
     for k in range(self.M_A):
@@ -719,19 +701,19 @@ class TreeALSCross:
     for k in range(self.M_A):
       cru = self.u.cores[node]
       crC = self.A_params[k].cores[node]
-      self.UAU[k][node] = torch.einsum('ab,ac,ad->bcd', torch.conj(cru), cru, crC)
+      self.UAU[k][node] = np.einsum('ab,ac,ad->bcd', np.conjugate(cru), cru, crC)
 
     for k in range(self.M_b):
       cru = self.u.cores[node]
       crC = self.b_params[k].cores[node]
 
-      self.UF[k][node] = torch.tensordot(cru, crC, dims=((0,),(0,)))
+      self.UF[k][node] = np.tensordot(cru, crC, axes=(0,0))
 
     ## rank adaption
     if self.kickrank > 0:
-      crz = torch.linalg.qr(crz)[0]
+      crz = np.linalg.qr(crz)[0]
 
-      crz_new_conj = torch.conj(crz)
+      crz_new_conj = np.conjugate(crz)
 
       for k in range(self.M_A):
         einsum_args = [
@@ -740,7 +722,7 @@ class TreeALSCross:
           self.A_params[k].cores[node], [0,3],
           [1,2,3]
         ]
-        self.ZUA[k][node] = torch.einsum(*einsum_args)
+        self.ZUA[k][node] = np.einsum(*einsum_args, optimize=True)
 
       for k in range(self.M_b):
         einsum_args = [
@@ -748,10 +730,9 @@ class TreeALSCross:
           self.b_params[k].cores[node], [0,2],
           [1,2]
           ]
-        self.ZUb[k][node] = torch.einsum(*einsum_args)
+        self.ZUb[k][node] = np.einsum(*einsum_args, optimize=True)
 
-      ind, C = rect_maxvol(crz.numpy(force=True), maxK=crz.shape[1])
-      C = torch.from_numpy(C).to(dtype=self.dtype)
+      ind, C = rect_maxvol(crz, maxK=crz.shape[1])
 
       self.ZU[node] = self.u.cores[node][ind]
 
@@ -767,35 +748,35 @@ class TreeALSCross:
     for k in range(self.M_A):
       tmp = self.A_params[k].cores[node]
       for child in node.children:
-        tmp = torch.tensordot(tmp, self.UA[k][child], ((0,),(-1,)))
+        tmp = np.tensordot(tmp, self.UA[k][child], (0,-1))
 
-      tmp = torch.moveaxis(tmp, 0, -1)
+      tmp = np.moveaxis(tmp, 0, -1)
       crA[k] = tmp.reshape(-1, tmp.shape[-1])
 
     # compute RHS projection
-    crF = torch.zeros(1, dtype=self.dtype)
+    crF = np.zeros(1)
     for k in range(self.M_b):
       tmp = self.b_params[k].cores[node]
       for child in node.children:
-        tmp = torch.tensordot(tmp, self.Ub[k][child], ((0,),(-1,)))
+        tmp = np.tensordot(tmp, self.Ub[k][child], (0,-1))
 
-      crF = crF + torch.tensordot(tmp, self.UF[k][node.parent], dims=((0,),(-1,)))
+      crF = crF + np.tensordot(tmp, self.UF[k][node.parent], axes=(0,-1))
 
     crF = crF.reshape(-1, crF.shape[-1])
 
     # assemble and solve blocks
     cru = []
     for j in range(crA[0].shape[0]):
-      Ai = torch.zeros(1, dtype=self.dtype)
+      Ai = np.zeros(1)
       for k in range(self.M_A):
-        Ai = Ai + torch.tensordot(self.UAU[k][node.parent], crA[k][j], dims=((-1,), (0,)))
+        Ai = Ai + np.tensordot(self.UAU[k][node.parent], crA[k][j], axes=(-1, 0))
 
-      cru += [torch.linalg.solve(Ai, crF[j])]
+      cru += [np.linalg.solve(Ai, crF[j])]
 
-    cru = torch.hstack(cru)
+    cru = np.hstack(cru)
 
     # check error
-    dx = torch.linalg.norm(cru.flatten() - self.u.cores[node].flatten()) / torch.linalg.norm(cru)
+    dx = np.linalg.norm(cru.flatten() - self.u.cores[node].flatten()) / np.linalg.norm(cru)
 
     # update solution
     self.u.cores[node] = cru.reshape(self.u.cores[node].shape)
@@ -812,17 +793,17 @@ class TreeALSCross:
         for k in range(self.M_A):
           cru = self.u.cores[node]
           crC = self.A_params[k].cores[node]
-          self.UAU[k][node] = torch.einsum('ab,ac,ad->bcd', torch.conj(cru), cru, crC)
+          self.UAU[k][node] = np.einsum('ab,ac,ad->bcd', np.conjugate(cru), cru, crC)
 
         for k in range(self.M_b):
           cru = self.u.cores[node]
           crC = self.b_params[k].cores[node]
 
-          self.UF[k][node] = torch.tensordot(cru, crC, dims=((0,),(0,)))
+          self.UF[k][node] = np.tensordot(cru, crC, axes=(0,0))
 
       else:
         cru = self.u.cores[node]
-        cru_conj = torch.conj(cru)
+        cru_conj = np.conj(cru)
 
         # recurse to children
         for i, child in enumerate(node.children):
@@ -843,7 +824,7 @@ class TreeALSCross:
             einsum_args += [self.UAU[k][child], np.arange(3*i, 3*(i+1))]
 
           einsum_args += [np.arange(ind_end - 3, ind_end)]
-          self.UAU[k][node] = torch.einsum(*einsum_args)
+          self.UAU[k][node] = np.einsum(*einsum_args, optimize=True)
 
         # RHS projections
         for k in range(self.M_b):
@@ -859,7 +840,7 @@ class TreeALSCross:
 
           einsum_args += [np.arange(ind_end - 2, ind_end)]
 
-          self.UF[k][node] = torch.einsum(*einsum_args)
+          self.UF[k][node] = np.einsum(*einsum_args, optimize=True)
 
     worker(self.root_node)
 
@@ -875,7 +856,7 @@ class TreeALSCross:
         tmp = tensor.cores[node]
         for i, child in enumerate(node.children):
           worker(child)
-          tmp = torch.tensordot(partial_evals[child], tmp, dims=((-1,),(i,)))
+          tmp = np.tensordot(partial_evals[child], tmp, (-1,i))
 
         tmp = tmp.reshape(-1, tmp.shape[-1])
         partial_evals[node] = tmp[maxvol_ind_list[node]]
@@ -895,17 +876,17 @@ class TreeALSCross:
     def worker(node):
       if node.isleaf:
         n, ru = self.u.cores[node].shape
-        ind = self.rng_numpy.choice(np.arange(n), self.kickrank, replace=True) #TODO replace=False?
+        ind = self.rng.choice(np.arange(n), self.kickrank, replace=True) #TODO replace=False?
         self.ZU[node] = self.u.cores[node][ind]
 
         for k in range(self.M_A):
           rA = self.A_params[k].cores[node].shape[-1]
-          self.ZUA[k][node] = torch.randn((self.kickrank, ru, rA), generator=self.rng_torch, dtype=self.dtype)
+          self.ZUA[k][node] = self.rng.standard_normal((self.kickrank, ru, rA))
           self.ZA[k][node] = self.A_params[k].cores[node][ind]
 
         for k in range(self.M_b):
           rb = self.b_params[k].cores[node].shape[-1]
-          self.ZUb[k][node] = torch.randn((self.kickrank, rb), generator=self.rng_torch, dtype=self.dtype)
+          self.ZUb[k][node] = self.rng.standard_normal((self.kickrank, rb))
           self.Zb[k][node] = self.b_params[k].cores[node][ind]
 
       else:
@@ -913,7 +894,7 @@ class TreeALSCross:
           worker(child)
 
         ru = self.u.cores[node].shape[-1]
-        ind = self.rng_numpy.choice(np.arange(self.kickrank**node.n_children), self.kickrank, replace=True) #TODO replace=False?
+        ind = self.rng.choice(np.arange(self.kickrank**node.n_children), self.kickrank, replace=True) #TODO replace=False?
 
         offset = node.n_children + 1
         einsum_args = [self.u.cores[node], np.arange(offset, 2*offset)]
@@ -921,14 +902,14 @@ class TreeALSCross:
           einsum_args += [self.ZU[child], [ci, offset+ci]]
 
         einsum_args += [np.concatenate([np.arange(offset-1), [2*offset-1]])]
-        ZU = torch.einsum(*einsum_args)
+        ZU = np.einsum(*einsum_args, optimize=True)
         ZU = ZU.reshape(-1, ZU.shape[-1])
         self.ZU[node] = ZU[ind]
 
         for k in range(self.M_A):
           rA = self.A_params[k].cores[node].shape[-1]
 
-          self.ZUA[k][node] = torch.randn((self.kickrank, ru, rA), generator=self.rng_torch, dtype=self.dtype)
+          self.ZUA[k][node] = self.rng.standard_normal((self.kickrank, ru, rA))
 
           crC = self.A_params[k].cores[node]
           offset = node.n_children + 1
@@ -937,13 +918,13 @@ class TreeALSCross:
             einsum_args += [self.ZA[k][child], [ci, offset+ci]]
 
           einsum_args += [np.concatenate([np.arange(offset-1), [2*offset-1]])]
-          ZA = torch.einsum(*einsum_args)
+          ZA = np.einsum(*einsum_args, optimize=True)
           ZA = ZA.reshape(-1, ZA.shape[-1])
           self.ZA[k][node] = ZA[ind]
 
         for k in range(self.M_b):
           rb = self.b_params[k].cores[node].shape[-1]
-          self.ZUb[k][node] = torch.randn((self.kickrank, rb), generator=self.rng_torch, dtype=self.dtype)
+          self.ZUb[k][node] = self.rng.standard_normal((self.kickrank, rb))
 
           crC = self.b_params[k].cores[node]
           offset = node.n_children + 1
@@ -952,7 +933,7 @@ class TreeALSCross:
             einsum_args += [self.Zb[k][child], [ci, offset+ci]]
 
           einsum_args += [np.concatenate([np.arange(offset-1), [2*offset-1]])]
-          Zb = torch.einsum(*einsum_args)
+          Zb = np.einsum(*einsum_args, optimize=True)
           Zb = Zb.reshape(-1, Zb.shape[-1])
           self.Zb[k][node] = Zb[ind]
 
@@ -970,9 +951,8 @@ class TreeALSCross:
     core = tensor.cores[tensor.tree.root]
     old_shape = core.shape
     core = core.reshape(core.shape[0], -1)
-    q,r = torch.linalg.qr(core.T)
-    ind, C = rect_maxvol(q.numpy(force=True), maxK=q.shape[-1])
-    C = torch.from_numpy(C).to(dtype=tensor.dtype)
+    q,r = np.linalg.qr(core.T)
+    ind, C = rect_maxvol(q, maxK=q.shape[-1])
     qmax = q[ind]
     tensor.cores[tensor.tree.root] = C.T.reshape((-1, ) + old_shape[1:])
     child0 = tensor.tree.root.children[0]

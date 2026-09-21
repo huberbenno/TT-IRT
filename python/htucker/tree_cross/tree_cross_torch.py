@@ -1,12 +1,13 @@
 import numpy as np
+import torch
 
 from typing import Callable
-from tree_tensor import TreeBasedTensor, TreeNode
-from tree import NodeIndexedList
-from maxvolpy.maxvol import rect_maxvol, svd_cut
+from tree_tensor.tree_tensor_torch import TreeBasedTensor, svd_cut_torch
+from tree.tree import TreeNode
+from maxvolpy.maxvol import rect_maxvol
 
 def RMS(x, **kwargs):
-  return np.sqrt(np.mean(np.square(x), **kwargs))
+  return torch.sqrt(torch.mean(torch.square(x), **kwargs))
 
 class TreeCross:
   def __init__(self, tensor: TreeBasedTensor):
@@ -64,6 +65,7 @@ class TreeCross:
           (np.tile(indexset_p, (n,1)), np.repeat(np.arange(n), r).reshape(-1,1))
         )
         eval = eval_f(indexset[:, order])
+        eval = torch.from_numpy(eval).to(dtype=self.tensor.dtype, device=self.tensor.device)
         self.n_eval += eval.shape[0]
         eval = eval.reshape(n, r)
 
@@ -72,9 +74,10 @@ class TreeCross:
         self.max_dx = max(res, self.max_dx)
         if verbose > 1: print(f'node {node.id}, res = {res:.2e}')
 
-        u,s,v = svd_cut(eval, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
-        r = np.diag(s) @ v
-        ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
+        u,s,v = svd_cut_torch(eval, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
+        r = torch.diag(s) @ v
+        ind, C = rect_maxvol(u.numpy(force=True), tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
+        C = torch.from_numpy(C).to(device=self.tensor.device, dtype=self.tensor.dtype)
         qmax = u[ind]
         self.tensor.cores[node] = C
 
@@ -86,6 +89,7 @@ class TreeCross:
           # sample core at indexset
           indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
           eval = eval_f(indexset)
+          eval = torch.from_numpy(eval).to(dtype=self.tensor.dtype, device=self.tensor.device)
           self.n_eval += eval.shape[0]
           core = eval.reshape(self.tensor.cores[node].shape)
 
@@ -100,17 +104,18 @@ class TreeCross:
           core = self.tensor.cores[node]
 
           # orth toward child
-          core = np.moveaxis(core, i, -1)
+          core = torch.moveaxis(core, i, -1)
           old_shape = core.shape[:-1]
           core = core.reshape(-1, core.shape[-1])
-          u,s,v = svd_cut(core, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
+          u,s,v = svd_cut_torch(core, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
           # u,s,v = np.linalg.svd(core, full_matrices=False)
-          r = np.diag(s) @ v
-          ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
+          r = torch.diag(s) @ v
+          ind, C = rect_maxvol(u.numpy(force=True), tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
+          C = torch.from_numpy(C).to(device=self.tensor.device, dtype=self.tensor.dtype)
           qmax = u[ind]
           core = C
           # push non orth factor to child
-          self.tensor.cores[child] = np.tensordot(self.tensor.cores[child], qmax @ r, axes=(-1,-1))
+          self.tensor.cores[child] = torch.tensordot(self.tensor.cores[child], qmax @ r, dims=((-1,),(-1,)))
 
           # update index set
           indexset_sizes = [np.arange(self.indexset_list[c].shape[0]) for c in child.siblings] + [np.arange(indexset_p.shape[0])]
@@ -128,14 +133,15 @@ class TreeCross:
           # absord non orth factor from child
           core = core.reshape(old_shape + (-1,))
           # TODO can skip this for last child
-          core = np.tensordot(core, factor, axes=(-1,-1))
-          self.tensor.cores[node] = np.moveaxis(core, -1, i)
+          core = torch.tensordot(core, factor, dims=((-1,),(-1,)))
+          self.tensor.cores[node] = torch.moveaxis(core, -1, i)
 
         # orth towards parent
         if not node.isroot:
           #sample core at indexset
           indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
           eval = eval_f(indexset)
+          eval = torch.from_numpy(eval).to(dtype=self.tensor.dtype, device=self.tensor.device)
           self.n_eval += eval.shape[0]
           core = eval.reshape(self.tensor.cores[node].shape)
 
@@ -147,11 +153,12 @@ class TreeCross:
           old_shape = core.shape[:-1]
           core = core.reshape(-1, core.shape[-1])
 
-          u,s,v = svd_cut(core, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
+          u,s,v = svd_cut_torch(core, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
           # print(f'{s[0]/s[-1]:.2e}')
           # u,s,v = np.linalg.svd(core, full_matrices=False)
-          r = np.diag(s) @ v
-          ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
+          r = torch.diag(s) @ v
+          ind, C = rect_maxvol(u.numpy(force=True), tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
+          C = torch.from_numpy(C).to(device=self.tensor.device, dtype=self.tensor.dtype)
           qmax = u[ind]
 
           core = C.reshape(old_shape + (-1,))

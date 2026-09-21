@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from collections import deque
 import numpy as np
 
+
 class NodeIndexedList(list):
   """
   Simple wrapper around list which can be indexed using tree nodes.
@@ -20,6 +21,7 @@ class NodeIndexedList(list):
       super().__setitem__(ind.id, val)
     else:
       super().__setitem__(ind, val)
+
 
 @dataclass
 class TreeNode:
