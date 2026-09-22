@@ -65,7 +65,7 @@ class TreeCross:
           (np.tile(indexset_p, (n,1)), np.repeat(np.arange(n), r).reshape(-1,1))
         )
         eval = eval_f(indexset[:, order])
-        eval = torch.from_numpy(eval).to(dtype=self.tensor.dtype, device=self.tensor.device)
+        eval = eval.to(dtype=self.tensor.dtype, device=self.tensor.device)
         self.n_eval += eval.shape[0]
         eval = eval.reshape(n, r)
 
@@ -89,7 +89,7 @@ class TreeCross:
           # sample core at indexset
           indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
           eval = eval_f(indexset)
-          eval = torch.from_numpy(eval).to(dtype=self.tensor.dtype, device=self.tensor.device)
+          eval = eval.to(dtype=self.tensor.dtype, device=self.tensor.device)
           self.n_eval += eval.shape[0]
           core = eval.reshape(self.tensor.cores[node].shape)
 
@@ -141,7 +141,7 @@ class TreeCross:
           #sample core at indexset
           indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
           eval = eval_f(indexset)
-          eval = torch.from_numpy(eval).to(dtype=self.tensor.dtype, device=self.tensor.device)
+          eval = eval.to(dtype=self.tensor.dtype, device=self.tensor.device)
           self.n_eval += eval.shape[0]
           core = eval.reshape(self.tensor.cores[node].shape)
 
