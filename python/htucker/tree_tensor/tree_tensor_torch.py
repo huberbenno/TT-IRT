@@ -101,25 +101,29 @@ class TreeBasedTensor:
     """
     return np.sum([core.size().numel() for core in self.cores])
 
-  def __getitem__(self, slices, ordered = True):
+  def __getitem__(self, slices, ordered = True, squeeze=True):
     assert self.tree.order == len(slices), \
       f'Tree order must match number of sliced dimensions ({self.tree.order} != {len(slices)}).'
 
-    val, order = self._getitem_subtree(self.tree.root, slices)
+    val, order = self._getitem_subtree(self.tree.root, slices, squeeze)
     if ordered:
       return val.squeeze(-1).permute(np.argsort(order).tolist())
     else:
       return val.squeeze(-1)
 
-  def _getitem_subtree(self, node, slices):
+  def _getitem_subtree(self, node, slices, squeeze):
     if node.isleaf:
-      return torch.atleast_2d(self.cores[node][slices[node.dim]]), [node.dim]
+      val = self.cores[node][slices[node.dim]]
+      if not squeeze or len(val.shape) > 1:
+        return torch.atleast_2d(self.cores[node][slices[node.dim]]), [node.dim]
+      else:
+        return val, []
     else:
       tmp = self.cores[node]
       n_c = node.n_children + 1
       order = []
       for i, child in enumerate(node.children):
-        val_c, order_c = self._getitem_subtree(child, slices)
+        val_c, order_c = self._getitem_subtree(child, slices, squeeze)
         order = order_c + order
         tmp = torch.tensordot(val_c, tmp, dims=((-1,), (-n_c + i,)))
         
@@ -450,9 +454,9 @@ class TreeBasedTensor:
       return prefix[3:] + f' + [{node.id}] dim {node.dim} of size {self.shape[node.dim]}\n'
     else:
       if node.isroot:
-        str = f'[{node.id}] root ranks={self.cores[node].shape}\n'
+        str = f'[{node.id}] root ranks={tuple(self.cores[node].shape)}\n'
       else:
-        str = prefix[3:] + f' + [{node.id}] ranks={self.cores[node].shape}\n'
+        str = prefix[3:] + f' + [{node.id}] ranks={tuple(self.cores[node].shape)}\n'
 
       prefix += '   ' if last else ' | '
       for child in node.children[:-1]:

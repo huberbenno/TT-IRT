@@ -45,25 +45,29 @@ class TreeBasedTensor:
     """
     return np.sum([core.size for core in self.cores])
 
-  def __getitem__(self, slices, ordered = True):
+  def __getitem__(self, slices, ordered = True, squeeze=True):
     assert self.tree.order == len(slices), \
       f'Tree order must match number of sliced dimensions ({self.tree.order} != {len(slices)}).'
 
-    val, order = self._getitem_subtree(self.tree.root, slices)
+    val, order = self._getitem_subtree(self.tree.root, slices, squeeze)
     if ordered:
       return val.squeeze(-1).transpose(np.argsort(order))
     else:
       return val.squeeze(-1)
 
-  def _getitem_subtree(self, node, slices):
+  def _getitem_subtree(self, node, slices, squeeze):
     if node.isleaf:
-      return np.atleast_2d(self.cores[node][slices[node.dim]]), [node.dim]
+      val = self.cores[node][slices[node.dim]]
+      if not squeeze or len(val.shape) > 1:
+        return np.atleast_2d(self.cores[node][slices[node.dim]]), [node.dim]
+      else:
+        return val, []
     else:
       tmp = self.cores[node]
       n_c = node.n_children + 1
       order = []
       for i, child in enumerate(node.children):
-        val_c, order_c = self._getitem_subtree(child, slices)
+        val_c, order_c = self._getitem_subtree(child, slices, squeeze)
         order = order_c + order
         tmp = np.tensordot(val_c, tmp, axes=(-1, -n_c + i))
       return tmp, order
