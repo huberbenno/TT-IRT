@@ -1,7 +1,7 @@
 import numpy as np
 
-from python.htucker.tree_tensor.tree_tensor import TreeBasedTensor
-from tree import NodeIndexedList, TreeNode
+from tree_tensor.tree_tensor import TreeBasedTensor
+from tree.tree import NodeIndexedList, TreeNode
 from maxvolpy.maxvol import rect_maxvol, svd_cut
 import copy
 from scipy.sparse import csr_matrix, issparse
@@ -98,13 +98,14 @@ class TreeALSCross:
       U_prev = self.u.cores[special]
 
       # construct coeff
-      arg = [[None] * self.M_A, [None] * self.M_b]
+      arg_A = [None] * self.M_A
+      arg_b = [None] * self.M_b
       for k in range(self.M_A):
-        arg[0][k] = np.tensordot(self.A_params[k].cores[special], self.UA[k][self.tree.root], axes=(-1,-1))
+        arg_A[k] = np.tensordot(self.A_params[k].cores[special], self.UA[k][self.tree.root], axes=(-1,-1))
       for k in range(self.M_b):
-        arg[1][k] = np.tensordot(self.b_params[k].cores[special], self.Ub[k][self.tree.root], axes=(-1,-1))
+        arg_b[k] = np.tensordot(self.b_params[k].cores[special], self.Ub[k][self.tree.root], axes=(-1,-1))
 
-      U0 = self.assem_solve_fun.solve(arg)
+      U0 = self.assem_solve_fun.solve(arg_A, arg_b)
       U0 = np.hstack(U0)
 
       dx = 1

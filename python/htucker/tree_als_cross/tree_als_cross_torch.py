@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 
-from python.htucker.tree_tensor.tree_tensor_torch import TreeBasedTensor, svd_cut_torch
-from tree import NodeIndexedList, TreeNode
+from tree_tensor.tree_tensor_torch import TreeBasedTensor, svd_cut_torch
+from tree.tree import NodeIndexedList, TreeNode
 from maxvolpy.maxvol import rect_maxvol
 import copy
 from scipy.sparse import csr_matrix, issparse
@@ -64,15 +64,15 @@ class TreeALSCross:
       self.b_params[k].cores[self.root_node] = torch.moveaxis(self.b_params[k].cores[self.root_node].squeeze(dim=-1), 0,-1)
 
     # init matrix and rhs variables
-    A0_cores = [A_param.cores[A_param.tree.dim2id(0)].numpy(force=True) for A_param in self.A_params]
-    b0_cores = [b_param.cores[b_param.tree.dim2id(0)].numpy(force=True) for b_param in self.b_params]
+    A0_cores = [A_param.cores[A_param.tree.dim2id(0)] for A_param in self.A_params]
+    b0_cores = [b_param.cores[b_param.tree.dim2id(0)] for b_param in self.b_params]
     A0 = assem_solve_fun.matrix(A0_cores)
-    for k, A0k in enumerate(A0):
-      A0[k] = [torch.from_numpy(a0k).to(dtype=self.dtype) for a0k in A0k]
+    # for k, A0k in enumerate(A0):
+    #   A0[k] = [torch.from_numpy(a0k).to(dtype=self.dtype) for a0k in A0k]
     self.A0 = A0
     F0 = assem_solve_fun.rhs(b0_cores)
     for k, F0k in enumerate(F0):
-      F0[k] = torch.from_numpy(np.hstack(F0k)).to(dtype=self.dtype)
+      F0[k] = torch.hstack(F0k)
     self.F0 = F0
 
     self.Nx = self.A0[0][0].shape[1]
@@ -111,15 +111,15 @@ class TreeALSCross:
       U_prev = self.u.cores[special]
 
       # construct coeff
-      arg = [[None] * self.M_A, [None] * self.M_b]
+      arg_A = [None] * self.M_A
+      arg_b = [None] * self.M_b
       for k in range(self.M_A):
-        arg[0][k] = torch.tensordot(self.A_params[k].cores[special], self.UA[k][self.tree.root], dims=((-1,),(-1,)))
+        arg_A[k] = torch.tensordot(self.A_params[k].cores[special], self.UA[k][self.tree.root], dims=((-1,),(-1,)))
       for k in range(self.M_b):
-        arg[1][k] = torch.tensordot(self.b_params[k].cores[special], self.Ub[k][self.tree.root], dims=((-1,),(-1,)))
+        arg_b[k] = torch.tensordot(self.b_params[k].cores[special], self.Ub[k][self.tree.root], dims=((-1,),(-1,)))
 
-      U0 = self.assem_solve_fun.solve(arg)
-      U0 = np.hstack(U0)
-      U0 = torch.from_numpy(U0).to(dtype=self.dtype)
+      U0 = self.assem_solve_fun.solve(arg_A, arg_b)
+      U0 = torch.hstack(U0)
 
       dx = 1
       if U_prev is not None:
