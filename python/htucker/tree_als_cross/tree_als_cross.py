@@ -24,6 +24,7 @@ class TreeALSCross:
 
     self.verbose = verbose
     self.kickrank = kickrank
+    self.n_eval = 0
 
     self.rng = np.random.default_rng()
 
@@ -107,6 +108,7 @@ class TreeALSCross:
 
       U0 = self.assem_solve_fun.solve(arg_A, arg_b)
       U0 = np.hstack(U0)
+      self.n_eval += U0.shape[1]
 
       dx = 1
       if U_prev is not None:
@@ -895,7 +897,9 @@ class TreeALSCross:
           worker(child)
 
         ru = self.u.cores[node].shape[-1]
-        ind = self.rng.choice(np.arange(self.kickrank**node.n_children), self.kickrank, replace=True) #TODO replace=False?
+        r_add = min(ru, self.kickrank)
+        indices = np.arange(np.prod([self.ZU[child].shape[0] for child in node.children]))
+        ind = self.rng_numpy.choice(indices, r_add, replace=True) #TODO replace=False?
 
         offset = node.n_children + 1
         einsum_args = [self.u.cores[node], np.arange(offset, 2*offset)]
@@ -910,7 +914,7 @@ class TreeALSCross:
         for k in range(self.M_A):
           rA = self.A_params[k].cores[node].shape[-1]
 
-          self.ZUA[k][node] = self.rng.standard_normal((self.kickrank, ru, rA))
+          self.ZUA[k][node] = self.rng.standard_normal((r_add, ru, rA))
 
           crC = self.A_params[k].cores[node]
           offset = node.n_children + 1
@@ -925,7 +929,7 @@ class TreeALSCross:
 
         for k in range(self.M_b):
           rb = self.b_params[k].cores[node].shape[-1]
-          self.ZUb[k][node] = self.rng.standard_normal((self.kickrank, rb))
+          self.ZUb[k][node] = self.rng.standard_normal((r_add, rb))
 
           crC = self.b_params[k].cores[node]
           offset = node.n_children + 1
