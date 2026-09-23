@@ -25,6 +25,7 @@ class TreeALSCross:
     self.verbose = verbose
     self.kickrank = kickrank
     self.n_eval = 0
+    self.iter_total = 0
 
     self.rng = np.random.default_rng()
 
@@ -91,7 +92,7 @@ class TreeALSCross:
     self.tol = tol
     self.max_dx = 0
 
-    for iteration in range(n_iter):
+    for iteration in range(self.iter_total, self.iter_total + n_iter):
       if self.verbose > 0:
         print(f'= swp={iteration}')
       #### special core
