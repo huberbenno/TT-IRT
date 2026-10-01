@@ -9,7 +9,7 @@ import torch
 from tree.tree import Tree
 from tree_tensor.tree_tensor_torch import TreeBasedTensor
 from tree_cross.tree_cross_torch import TreeCross
-from tree.tree_util import balanced_binary_tupletree, linear_tupletree, weighted_binary_tupletree
+from tree.tree_util import balanced_binary_tupletree, linear_tupletree, weighted_binary_tupletree, random_tupletree
 from tree_als_cross.tree_als_cross_torch import TreeALSCross
 
 @dataclass(frozen=True)
@@ -21,14 +21,15 @@ class ARGS_alsc_convergence:
   n_param : int = 200
   c_offset : float = 1
   c_var : float = 4
-  c_decay : float = 2
+  c_decay : float = 2.
   tree_type : str = 'linear'
   cross_niter : int = 15
-  cross_eps : float = 1e-4
+  cross_eps : float = 1e-5
   cross_kickrank : int = 5
   alsc_niter : int = 5
   alsc_kickrank : int = 5
   alsc_rinit : int = 0
+  alsc_eps : float = 1e-7
   rng_seed : int = 0
   N_mc : int = 100
 
@@ -49,7 +50,6 @@ def alsc_convergence(args : ARGS_alsc_convergence):
     param_shape = tuple(int(ny) for ny in param_shape)
   else:
     param_shape = tuple([args.Ny] * args.n_param)
-  print(param_shape)
 
   if args.tree_type == 'linear':
     tree = Tree.from_tupletree(linear_tupletree(args.n_param))
@@ -58,15 +58,27 @@ def alsc_convergence(args : ARGS_alsc_convergence):
   elif args.tree_type == 'weighted':
     w = (np.arange(args.n_param)+1)**-args.c_decay
     tree = Tree.from_tupletree(weighted_binary_tupletree(args.n_param, w))
+  elif args.tree_type == 'random':
+    tree = Tree.from_tupletree(random_tupletree(args.n_param, seed=args.rng_seed))
+
+  stats['sacking_index'] = np.sum(np.array(tree.get_leaf_depths()[1:])-1)
+  colles_ind = 0
+  subtree_dims = tree.get_subtree_dims()
+  for node in tree.node_list:
+    if node.isroot: continue
+    if not node.isleaf and node.n_children == 2:
+      colles_ind += abs(len(subtree_dims[node.children[0]]) - len(subtree_dims[node.children[1]]))
+
+  stats['colles_index'] = colles_ind
 
   if args.verbose: print('Computing coefficient TT approximation')
   C_a = TreeBasedTensor.randn(tree, (args.Nx,) + param_shape, args.Ny, dtype=torch.float64, seed=args.rng_seed)
   cross = TreeCross(C_a)
   cross.run(
-    cfun, 
-    n_iter = args.cross_niter, 
-    eps = args.cross_eps, 
-    kickrank = args.cross_kickrank, 
+    cfun,
+    n_iter = args.cross_niter,
+    eps = args.cross_eps,
+    kickrank = args.cross_kickrank,
     verbose = args.verbose
     )
   stats['cross_neval'] = cross.n_eval
@@ -102,7 +114,8 @@ def alsc_convergence(args : ARGS_alsc_convergence):
   stats['size'] = []
 
   for iter in range(args.alsc_niter):
-    alsc.run(n_iter=1)
+    if args.verbose: print('[', iter*'=', '>', (args.alsc_niter-iter-1)* ' ', f'](iter {iter})', sep='')
+    alsc.run(n_iter=1, tol=args.alsc_eps)
     u = alsc.get_tensor()
 
     stats['alsc_n_eval'] += [alsc.n_eval]
@@ -132,8 +145,11 @@ def alsc_convergence(args : ARGS_alsc_convergence):
     stats['error_coeff'] += [errs_coeff]
 
   fn = f'data/stats_{hash(args):X}.pkl'
+  stats['file'] = fn
   with open(fn, mode='wb') as file:
     pickle.dump((args, stats), file)
-  if args.verbose: print(f'Saved stats as {fn}') 
+
+  if args.verbose: print(f'\nSaved stats to: {fn}')
+
   return stats
 

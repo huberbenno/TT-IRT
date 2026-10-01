@@ -186,22 +186,44 @@ class Tree:
     except IndexError:      
       return levels
     
-  def get_subtree_dims(self) -> list:
-    subtree_dims = self.n_nodes * [None]
-    def worker(node):
+  def get_subtree_dims(self) -> NodeIndexedList:
+    subtree_dims = NodeIndexedList(self.n_nodes * [None])
+    def worker(node: TreeNode):
       if node.isleaf:
-        subtree_dims[node.id] = (node.dim, )
+        subtree_dims[node] = (node.dim, )
       else:
         local_dims = []
         for child in node.children:
           worker(child)
           local_dims += list(subtree_dims[child.id])
 
-        subtree_dims[node.id] = tuple(sorted(local_dims))
+        subtree_dims[node] = tuple(sorted(local_dims))
 
     worker(self.root)
 
     return subtree_dims
+
+  def get_depths(self) -> NodeIndexedList:
+    depth = NodeIndexedList(self.n_nodes * [None])
+    def worker(node: TreeNode, d):
+      depth[node] = d
+      for child in node.children:
+        worker(child, d+1)
+
+    worker(self.root, 0)
+    return depth
+
+  def get_leaf_depths(self) -> list:
+    depth = self.order * [None]
+    def worker(node: TreeNode, d):
+      if node.isleaf:
+        depth[node.dim] = d
+      else:
+        for child in node.children:
+          worker(child, d+1)
+
+    worker(self.root, 0)
+    return depth
   
   def path_to_node(self, node: TreeNode) -> list:
     """
@@ -222,7 +244,7 @@ class Tree:
     return self.path_to_node(node)
 
   @staticmethod
-  def from_tupletree(tupletree):
+  def from_tupletree(tupletree) -> Tree:
     """
     Construct a tree from nested tuples. 
     Integer values mark leaves correspondingto the dimension given by the integer. 
@@ -269,7 +291,7 @@ class Tree:
 
     return new_tree
     
-  def __repr__(self):
+  def __repr__(self) -> None:
     return f'Tree with  order: {self.order},  nodes: {self.n_nodes},  arity: {self.arity}'
   
   def print(self):
@@ -278,7 +300,7 @@ class Tree:
     """
     print(self._print(self.root))
 
-  def _print(self, node, prefix='', last=False):
+  def _print(self, node: TreeNode, prefix='', last=False) -> str:
     if node.isleaf:
       return prefix[3:] + f' + [{node.id}] (dim {node.dim})\n'
     else:
@@ -292,5 +314,3 @@ class Tree:
         str += self._print(child, prefix=prefix)
       str += self._print(node.children[-1], prefix=prefix, last=True)
       return str
-
-    

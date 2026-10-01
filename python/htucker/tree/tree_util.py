@@ -39,3 +39,18 @@ def weighted_binary_tupletree(n, weights):
     return (sub_l, sub_r)
 
   return (0, worker([i+1 for i in range(n)], weights))
+
+def random_tupletree(n, seed=None):
+  rng = np.random.default_rng(seed=seed)
+
+  def worker(indices):
+    if len(indices) == 1:
+      return indices[0]
+
+    split_i = rng.integers(1, len(indices))
+    rng.shuffle(indices)
+    sub_l = worker(indices[:split_i])
+    sub_r = worker(indices[split_i:])
+    return (sub_l, sub_r)
+
+  return (0, worker([i+1 for i in range(n)]))
