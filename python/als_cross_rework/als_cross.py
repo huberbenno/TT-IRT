@@ -128,14 +128,14 @@ class als_cross:
       # update rank (in case core has rank deficiency)
       r[i-1] = cr.shape[1]
       # compute cross approximation
-      ind = tt.maxvol.maxvol(cr)
+      ind, C = tt.maxvol.maxvol(cr)
       if return_indices:
         indices = [ind] + indices
 
-      cr = cr.T
-      CC = cr[:, ind]
-      cr = np.linalg.solve(CC, cr)
+      CC = cr[ind].T
+      # cr = np.linalg.solve(CC, cr)
       v = v.T @ CC
+      cr = C.T
       # update core
       cores[i] = cr.reshape((r[i-1],n,r[i]))
 
@@ -481,10 +481,11 @@ class als_cross:
     rv = rv @ v.T[:rv.shape[1]]
 
     # maxvol to find local indices
-    ind = tt.maxvol.maxvol(cru)
+    ind, C = tt.maxvol.maxvol(cru)
     UU = cru[ind].T
-    cru = np.linalg.solve(UU, cru.T)
+    # cru = np.linalg.solve(UU, cru.T)
     rv = rv @ UU
+    cru = C.T
     self.ru[i-1] = rv.shape[1]
 
     # cast non orthogonal factor to next core
@@ -514,7 +515,7 @@ class als_cross:
       # QR and maxvol residual core
       crz_new = np.linalg.qr(crz_new.reshape(self.rz[i-1], -1).T)[0]
       self.rz[i-1] = crz_new.shape[1]
-      ind = tt.maxvol.maxvol(crz_new)
+      ind = tt.maxvol.maxvol(crz_new)[0]
       for k in range(self.M_A):
         # sample C at Z indices
         self.ZA[k][i-1] = self.A_cores[k][i-1].reshape(-1, self.rc_A[k][i]) @ self.ZA[k][i]
