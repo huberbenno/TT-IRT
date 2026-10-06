@@ -1,6 +1,8 @@
 import numpy as np
 from dataclasses import dataclass
-import pickle
+import json
+from dataclasses import asdict
+from benchmarks.util import NumpyEncoder
 
 from pde.coeff_function import coeff
 from pde.diffusion_1d import Diffusion1D_torch as Diffusion1D
@@ -9,7 +11,7 @@ import torch
 from tree.tree import Tree
 from tree_tensor.tree_tensor_torch import TreeBasedTensor
 from tree_cross.tree_cross_torch import TreeCross
-from tree.tree_util import balanced_binary_tupletree, linear_tupletree, weighted_binary_tupletree
+from tree.tree_util import balanced_binary_tupletree, linear_tupletree, weighted_binary_tupletree, random_tupletree
 from tree_als_cross.tree_als_cross_torch import TreeALSCross
 
 @dataclass(frozen=True)
@@ -23,12 +25,14 @@ class ARGS_alsc_accuracy_scaling:
   c_var : float = 4
   c_decay : float = 2.
   tree_type : str = 'linear'
+  tree_weight_decay : float = 2.0
   cross_niter : int = 15
   # cross_eps : float = 1e-4
   cross_kickrank : int = 5
   alsc_niter : int = 5
   alsc_kickrank : int = 5
   alsc_rinit : int = 5
+  alsc_eps_extra: float = 1e-1
   eps_start : float = 1e0
   eps_end : float = 1e-4
   eps_steps: int = 5
@@ -61,8 +65,10 @@ def alsc_accuracy_scaling(args : ARGS_alsc_accuracy_scaling):
   elif args.tree_type == 'balanced':
     tree = Tree.from_tupletree(balanced_binary_tupletree(args.n_param))
   elif args.tree_type == 'weighted':
-    w = (np.arange(args.n_param)+1)**-args.c_decay
+    w = (np.arange(args.n_param)+1)**-args.tree_weight_decay
     tree = Tree.from_tupletree(weighted_binary_tupletree(args.n_param, w))
+  elif args.tree_type == 'random':
+    tree = Tree.from_tupletree(random_tupletree(args.n_param, seed=args.rng_seed))
 
   if args.verbose: print('Computing coefficient TT approximation')
   C_a = TreeBasedTensor.randn(tree, (args.Nx,) + param_shape, args.Ny, dtype=torch.float64, seed=args.rng_seed)
@@ -111,7 +117,7 @@ def alsc_accuracy_scaling(args : ARGS_alsc_accuracy_scaling):
       kickrank=args.alsc_kickrank,
       verbose=args.verbose,
     )
-    alsc.run(n_iter=args.alsc_niter, tol=eps)
+    alsc.run(n_iter=args.alsc_niter, tol=eps*args.alsc_eps_extra)
     u = alsc.get_tensor()
 
     stats['alsc_n_eval'] += [alsc.n_eval]
@@ -140,9 +146,12 @@ def alsc_accuracy_scaling(args : ARGS_alsc_accuracy_scaling):
     stats['error'] += [errs]
     stats['error_coeff'] += [errs_coeff]
 
-  fn = f'data/stats_{hash(args):X}.pkl'
-  with open(fn, mode='wb') as file:
-    pickle.dump((args, stats), file)
+  fn = f'data/stats_{hash(args):X}.json'
+  stats['file'] = fn
+  with open(fn, mode='w') as file:
+    json.dump({'args': asdict(args), 'stats':stats}, file, cls=NumpyEncoder)
+
+  if args.verbose: print(f'\nSaved stats to: {fn}')
 
   if args.verbose: print(f'\nSaved stats to: {fn}')
 

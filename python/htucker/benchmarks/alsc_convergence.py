@@ -1,6 +1,8 @@
 import numpy as np
 from dataclasses import dataclass
-import pickle
+import json
+from dataclasses import asdict
+from benchmarks.util import NumpyEncoder
 
 from pde.coeff_function import coeff
 from pde.diffusion_1d import Diffusion1D_torch as Diffusion1D
@@ -11,6 +13,7 @@ from tree_tensor.tree_tensor_torch import TreeBasedTensor
 from tree_cross.tree_cross_torch import TreeCross
 from tree.tree_util import balanced_binary_tupletree, linear_tupletree, weighted_binary_tupletree, random_tupletree
 from tree_als_cross.tree_als_cross_torch import TreeALSCross
+
 
 @dataclass(frozen=True)
 class ARGS_alsc_convergence:
@@ -23,6 +26,7 @@ class ARGS_alsc_convergence:
   c_var : float = 4
   c_decay : float = 2.
   tree_type : str = 'linear'
+  tree_weight_decay : float = 2.0
   cross_niter : int = 15
   cross_eps : float = 1e-5
   cross_kickrank : int = 5
@@ -56,7 +60,7 @@ def alsc_convergence(args : ARGS_alsc_convergence):
   elif args.tree_type == 'balanced':
     tree = Tree.from_tupletree(balanced_binary_tupletree(args.n_param))
   elif args.tree_type == 'weighted':
-    w = (np.arange(args.n_param)+1)**-args.c_decay
+    w = (np.arange(args.n_param)+1)**-args.tree_weight_decay
     tree = Tree.from_tupletree(weighted_binary_tupletree(args.n_param, w))
   elif args.tree_type == 'random':
     tree = Tree.from_tupletree(random_tupletree(args.n_param, seed=args.rng_seed))
@@ -144,10 +148,10 @@ def alsc_convergence(args : ARGS_alsc_convergence):
     stats['error'] += [errs]
     stats['error_coeff'] += [errs_coeff]
 
-  fn = f'data/stats_{hash(args):X}.pkl'
+  fn = f'data/stats_{hash(args):X}.json'
   stats['file'] = fn
-  with open(fn, mode='wb') as file:
-    pickle.dump((args, stats), file)
+  with open(fn, mode='w') as file:
+    json.dump({'args': asdict(args), 'stats':stats}, file, cls=NumpyEncoder)
 
   if args.verbose: print(f'\nSaved stats to: {fn}')
 
