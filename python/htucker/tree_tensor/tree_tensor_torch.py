@@ -1,8 +1,11 @@
 from tree.tree import Tree, TreeNode, NodeIndexedList
 import numpy as np
-import torch
-from maxvolpy.maxvol import rect_maxvol
 import copy
+import torch
+from tt.maxvol import rect_maxvol
+from tt import set_backend as tt_set_backend
+tt_set_backend('torch')
+
 
 ###### Borrows from tensap, keep in mind if publishing! #####
 
@@ -394,8 +397,8 @@ class TreeBasedTensor:
       core = self.cores[node]
       if node.isleaf:
         q, r = torch.linalg.qr(core)
-        ind, C = rect_maxvol(q.numpy(force=True), maxK=core.shape[-1])
-        C = torch.from_numpy(C).to(device=self.device)
+        ind, C = rect_maxvol(q, maxK=core.shape[-1], warn_budget=False)
+        C = C.to(device=self.device)
         indexset_list[node] = ind.reshape(-1,1)
         indexset_dims_list[node] = (node.dim,)
         maxvol_ind_list[node] = ind
@@ -427,8 +430,8 @@ class TreeBasedTensor:
           # find maxvol indices
           old_shape = core.shape
           q, r = torch.linalg.qr(core.reshape(-1, core.shape[-1]))
-          ind, C = rect_maxvol(q.numpy(force=True), maxK=core.shape[-1])
-          C = torch.from_numpy(C).to(device=self.device)
+          ind, C = rect_maxvol(q, maxK=core.shape[-1], warn_budget=False)
+          C = C.to(device=self.device)
           qmax = q[ind]
 
           indexset_list[node] = indexset[ind]

@@ -4,7 +4,9 @@ import torch
 from typing import Callable
 from tree_tensor.tree_tensor_torch import TreeBasedTensor, svd_cut_torch
 from tree.tree import TreeNode
-from maxvolpy.maxvol import rect_maxvol
+from tt.maxvol import rect_maxvol
+from tt import set_backend as tt_set_backend
+tt_set_backend('torch')
 
 def RMS(x, **kwargs):
   return torch.sqrt(torch.mean(torch.square(x), **kwargs))
@@ -76,8 +78,8 @@ class TreeCross:
 
         u,s,v = svd_cut_torch(eval, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
         r = torch.diag(s) @ v
-        ind, C = rect_maxvol(u.numpy(force=True), tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
-        C = torch.from_numpy(C).to(device=self.tensor.device, dtype=self.tensor.dtype)
+        ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank, warn_budget=False)
+        C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
         qmax = u[ind]
         self.tensor.cores[node] = C
 
@@ -110,8 +112,8 @@ class TreeCross:
           u,s,v = svd_cut_torch(core, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
           # u,s,v = np.linalg.svd(core, full_matrices=False)
           r = torch.diag(s) @ v
-          ind, C = rect_maxvol(u.numpy(force=True), tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
-          C = torch.from_numpy(C).to(device=self.tensor.device, dtype=self.tensor.dtype)
+          ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank, warn_budget=False)
+          C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
           qmax = u[ind]
           core = C
           # push non orth factor to child
@@ -157,8 +159,8 @@ class TreeCross:
           # print(f'{s[0]/s[-1]:.2e}')
           # u,s,v = np.linalg.svd(core, full_matrices=False)
           r = torch.diag(s) @ v
-          ind, C = rect_maxvol(u.numpy(force=True), tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
-          C = torch.from_numpy(C).to(device=self.tensor.device, dtype=self.tensor.dtype)
+          ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank, warn_budget=False)
+          C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
           qmax = u[ind]
 
           core = C.reshape(old_shape + (-1,))

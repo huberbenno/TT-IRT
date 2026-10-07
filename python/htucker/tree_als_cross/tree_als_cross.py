@@ -1,10 +1,10 @@
 import numpy as np
-
-from tree_tensor.tree_tensor import TreeBasedTensor
-from tree.tree import NodeIndexedList, TreeNode
-from maxvolpy.maxvol import rect_maxvol, svd_cut
 import copy
 from scipy.sparse import csr_matrix, issparse
+from tt.maxvol import rect_maxvol
+
+from tree_tensor.tree_tensor import TreeBasedTensor, svd_cut
+from tree.tree import NodeIndexedList, TreeNode
 
 class TreeALSCross:
   def __init__(
@@ -474,7 +474,7 @@ class TreeALSCross:
 
 
     # maxvol
-    ind, C = rect_maxvol(cru, maxK=cru.shape[1])
+    ind, C = rect_maxvol(cru, maxK=cru.shape[1], warn_budget=False)
     qmax = cru[ind]
 
     # update core
@@ -556,7 +556,7 @@ class TreeALSCross:
       crz_new_conj = np.conjugate(crz_new).reshape(old_shape)
 
       #sample at res indices
-      ind, C = rect_maxvol(crz_new, maxK=crz_new.shape[1])
+      ind, C = rect_maxvol(crz_new, maxK=crz_new.shape[1], warn_budget=False)
 
       offset = node.n_children+1
       einsum_args = [self.u.cores[node], np.arange(offset, 2*offset)]
@@ -679,7 +679,7 @@ class TreeALSCross:
       v = rv[:,:ru] @ v
 
     # maxvol
-    ind, C = rect_maxvol(cru, maxK=cru.shape[1])
+    ind, C = rect_maxvol(cru, maxK=cru.shape[1], warn_budget=False)
     qmax = cru[ind]
 
     # update core
@@ -736,7 +736,7 @@ class TreeALSCross:
           ]
         self.ZUb[k][node] = np.einsum(*einsum_args, optimize=True)
 
-      ind, C = rect_maxvol(crz, maxK=crz.shape[1])
+      ind, C = rect_maxvol(crz, maxK=crz.shape[1], warn_budget=False)
 
       self.ZU[node] = self.u.cores[node][ind]
 
@@ -958,7 +958,7 @@ class TreeALSCross:
     old_shape = core.shape
     core = core.reshape(core.shape[0], -1)
     q,r = np.linalg.qr(core.T)
-    ind, C = rect_maxvol(q, maxK=q.shape[-1])
+    ind, C = rect_maxvol(q, maxK=q.shape[-1], warn_budget=False)
     qmax = q[ind]
     tensor.cores[tensor.tree.root] = C.T.reshape((-1, ) + old_shape[1:])
     child0 = tensor.tree.root.children[0]

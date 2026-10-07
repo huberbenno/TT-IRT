@@ -1,9 +1,8 @@
 import numpy as np
-
 from typing import Callable
-from tree_tensor.tree_tensor import TreeBasedTensor, TreeNode
-from tree.tree import NodeIndexedList
-from maxvolpy.maxvol import rect_maxvol, svd_cut
+from tt.maxvol import rect_maxvol
+
+from tree_tensor.tree_tensor import TreeBasedTensor, TreeNode, svd_cut
 
 def RMS(x, **kwargs):
   return np.sqrt(np.mean(np.square(x), **kwargs))
@@ -74,7 +73,7 @@ class TreeCross:
 
         u,s,v = svd_cut(eval, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
         r = np.diag(s) @ v
-        ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
+        ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank, warn_budget=False)
         qmax = u[ind]
         self.tensor.cores[node] = C
 
@@ -106,7 +105,7 @@ class TreeCross:
           u,s,v = svd_cut(core, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
           # u,s,v = np.linalg.svd(core, full_matrices=False)
           r = np.diag(s) @ v
-          ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
+          ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank, warn_budget=False)
           qmax = u[ind]
           core = C
           # push non orth factor to child
@@ -151,7 +150,7 @@ class TreeCross:
           # print(f'{s[0]/s[-1]:.2e}')
           # u,s,v = np.linalg.svd(core, full_matrices=False)
           r = np.diag(s) @ v
-          ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank)
+          ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank, warn_budget=False)
           qmax = u[ind]
 
           core = C.reshape(old_shape + (-1,))

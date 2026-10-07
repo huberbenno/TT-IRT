@@ -1,11 +1,14 @@
 import numpy as np
 import torch
+import copy
+from scipy.sparse import csr_matrix, issparse
+from tt.maxvol import rect_maxvol
+from tt import set_backend as tt_set_backend
+tt_set_backend('torch')
+
 
 from tree_tensor.tree_tensor_torch import TreeBasedTensor, svd_cut_torch
 from tree.tree import NodeIndexedList, TreeNode
-from maxvolpy.maxvol import rect_maxvol
-import copy
-from scipy.sparse import csr_matrix, issparse
 
 class TreeALSCross:
   def __init__(
@@ -488,8 +491,8 @@ class TreeALSCross:
 
 
     # maxvol
-    ind, C = rect_maxvol(cru.numpy(force=True), maxK=cru.shape[1])
-    C = torch.from_numpy(C).to(dtype=self.dtype)
+    ind, C = rect_maxvol(cru, maxK=cru.shape[1], warn_budget=False)
+    C = C.to(dtype=self.dtype)
     qmax = cru[ind]
 
     # update core
@@ -571,8 +574,8 @@ class TreeALSCross:
       crz_new_conj = torch.conj(crz_new).reshape(old_shape)
 
       #sample at res indices
-      ind, C = rect_maxvol(crz_new.numpy(force=True), maxK=crz_new.shape[1])
-      C = torch.from_numpy(C).to(dtype=self.dtype)
+      ind, C = rect_maxvol(crz_new, maxK=crz_new.shape[1], warn_budget=False)
+      C = C.to(dtype=self.dtype)
 
       offset = node.n_children+1
       einsum_args = [self.u.cores[node], np.arange(offset, 2*offset)]
@@ -695,8 +698,8 @@ class TreeALSCross:
       v = rv[:,:ru] @ v
 
     # maxvol
-    ind, C = rect_maxvol(cru.numpy(force=True), maxK=cru.shape[1])
-    C = torch.from_numpy(C).to(dtype=self.dtype)
+    ind, C = rect_maxvol(cru, maxK=cru.shape[1], warn_budget=False)
+    C = C.to(dtype=self.dtype)
     qmax = cru[ind]
 
     # update core
@@ -753,8 +756,8 @@ class TreeALSCross:
           ]
         self.ZUb[k][node] = torch.einsum(*einsum_args)
 
-      ind, C = rect_maxvol(crz.numpy(force=True), maxK=crz.shape[1])
-      C = torch.from_numpy(C).to(dtype=self.dtype)
+      ind, C = rect_maxvol(crz, maxK=crz.shape[1], warn_budget=False)
+      C = C.to(dtype=self.dtype)
 
       self.ZU[node] = self.u.cores[node][ind]
 
@@ -975,8 +978,8 @@ class TreeALSCross:
     old_shape = core.shape
     core = core.reshape(core.shape[0], -1)
     q,r = torch.linalg.qr(core.T)
-    ind, C = rect_maxvol(q.numpy(force=True), maxK=q.shape[-1])
-    C = torch.from_numpy(C).to(dtype=tensor.dtype)
+    ind, C = rect_maxvol(q, maxK=q.shape[-1], warn_budget=False)
+    C = C.to(dtype=tensor.dtype)
     qmax = q[ind]
     tensor.cores[tensor.tree.root] = C.T.reshape((-1, ) + old_shape[1:])
     child0 = tensor.tree.root.children[0]

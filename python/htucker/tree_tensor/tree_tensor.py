@@ -1,9 +1,51 @@
 from tree.tree import Tree, TreeNode, NodeIndexedList
 import numpy as np
-from maxvolpy.maxvol import svd_cut, rect_maxvol
+from tt.maxvol import rect_maxvol
 import copy
 
 ###### Borrows from tensap, keep in mind if publishing! #####
+
+# see maxvolpy.maxvol.svd_cut 
+def svd_cut(A, tol, alpha=0., norm=2):
+    """
+    Computes SVD and cuts low singular values.
+    
+    Computes singular values decomposition of matrix `A`, adds
+    regularizing parameter `alpha` to each singular value and returns
+    only largest singular values and vectors with relative tolerance
+    `tol`.
+
+    Parameters
+    ----------
+    A: ndarray
+        Real or complex matrix or matrix-like object.
+    tol: float
+        Tolerance of cutting singular values operation.
+    alpha: float, optional
+        Regularizing parameter.
+    norm: {2, 'fro'}, optional
+        Defines norm, that is chosen when cutting singular values.
+
+    Returns
+    -------
+    U: ndarray
+        Left singular vectors, corresponding to largest singular values.
+    S: ndarray
+        Largest singular values.
+    V: ndarray
+        Right singular vectors, corresponding to largest singular values.
+    """
+    U, S, V = np.linalg.svd(A, full_matrices=False)
+    S_reg = S+alpha
+    S1 = S_reg[::-1]
+    if norm == 2:
+        rank = S1.shape[0]-np.searchsorted(S1, tol*S1[-1], side='left')
+    elif norm == 'fro':
+        S1 = np.cumsum(np.square(S1))
+        rank = S1.shape[0]-np.searchsorted(S1, S1[-1] * tol**2, side='left')
+    else:
+        raise ValueError("Invalid parameter norm value")
+    return U[:,:rank], S_reg[:rank], V[:rank]
 
 
 class TreeBasedTensor:
@@ -335,7 +377,7 @@ class TreeBasedTensor:
       core = self.cores[node]
       if node.isleaf:
         q, r = np.linalg.qr(core)
-        ind, C = rect_maxvol(q, maxK=core.shape[-1])
+        ind, C = rect_maxvol(q, maxK=core.shape[-1], warn_budget=False)
         indexset_list[node] = ind.reshape(-1,1)
         indexset_dims_list[node] = (node.dim,)
         maxvol_ind_list[node] = ind
@@ -367,7 +409,7 @@ class TreeBasedTensor:
           # find maxvol indices
           old_shape = core.shape
           q, r = np.linalg.qr(core.reshape(-1, core.shape[-1]))
-          ind, C = rect_maxvol(q, maxK=core.shape[-1])
+          ind, C = rect_maxvol(q, maxK=core.shape[-1], warn_budget=False)
           qmax = q[ind]
 
           indexset_list[node] = indexset[ind]
