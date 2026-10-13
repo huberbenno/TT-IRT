@@ -59,7 +59,7 @@ class TreeBasedTensor:
     if (tree is None) and isinstance(cores, TreeBasedTensor):
       # Create a copy
       self.tree = copy.deepcopy(cores.tree)
-      self.cores = copy.deepcopy(cores.cores)
+      self.cores = NodeIndexedList([core.detach().clone() for core in cores.cores])
       self.shape = cores.shape
 
     elif isinstance(cores, (list, torch.tensor)) and isinstance(
@@ -335,39 +335,46 @@ class TreeBasedTensor:
     """
     Truncate tensor ranks to specified tolerance using SVD.
     """
-  
-    def worker_trunc(node):
-      core = self.cores[node]
-      if node.isleaf:
-        u,s,v = svd_cut_torch(core, tol=tol/np.sqrt(self.ndim), norm='fro')
-        self.cores[node] = u
-        return torch.diag(s) @ v
-      else:
-        for i, child in enumerate(node.children):
-          r_c = core.shape[i]
-          core = torch.swapaxes(core, -1, i)
-          old_shape = core.shape[:-1]
-          core = core.reshape(-1, r_c)
+    with torch.no_grad():
+      def worker_trunc(node):
+        core = self.cores[node]
+        if node.isleaf:
           u,s,v = svd_cut_torch(core, tol=tol/np.sqrt(self.ndim), norm='fro')
-          core = u
-          self.cores[child] = torch.tensordot(self.cores[child], torch.diag(s) @ v, dims=((-1,),(-1,)))
-          r = worker_trunc(child)
-          core = torch.tensordot(core, r, dims=((-1,),(-1,)))
-          core = core.reshape(old_shape + (-1,))
-          core = torch.swapaxes(core, -1, i)
-          self.cores[node] = core
-
-        if not node.isroot:
-          old_shape = core.shape[:-1]
-          core = core.reshape(-1, core.shape[-1])
-          u,s,v = svd_cut_torch(core, tol=tol/np.sqrt(self.ndim), norm='fro')
-          core = u.reshape(old_shape + (-1,))
-          self.cores[node] = core
+          self.cores[node] = u
           return torch.diag(s) @ v
+        else:
+          for i, child in enumerate(node.children):
+            r_c = core.shape[i]
+            core = torch.swapaxes(core, -1, i)
+            old_shape = core.shape[:-1]
+            core = core.reshape(-1, r_c)
+            u,s,v = svd_cut_torch(core, tol=tol/np.sqrt(self.ndim), norm='fro')
+            core = u
+            self.cores[child] = torch.tensordot(self.cores[child], torch.diag(s) @ v, dims=((-1,),(-1,)))
+            r = worker_trunc(child)
+            core = torch.tensordot(core, r, dims=((-1,),(-1,)))
+            core = core.reshape(old_shape + (-1,))
+            core = torch.swapaxes(core, -1, i)
+            self.cores[node] = core
 
-    worker_trunc(self.tree.root)
+          if not node.isroot:
+            old_shape = core.shape[:-1]
+            core = core.reshape(-1, core.shape[-1])
+            u,s,v = svd_cut_torch(core, tol=tol/np.sqrt(self.ndim), norm='fro')
+            core = u.reshape(old_shape + (-1,))
+            self.cores[node] = core
+            return torch.diag(s) @ v
 
-    return self
+      worker_trunc(self.tree.root)
+
+      return self
+
+  def requires_grad_(self, requires_grad: bool = True):
+    """
+    Set the requires_grad attribute of the core tensors.
+    """
+    for core in self.cores:
+      core.requires_grad_(requires_grad)
 
   def _orth_subtree(self, node : TreeNode):
     core = self.cores[node]
