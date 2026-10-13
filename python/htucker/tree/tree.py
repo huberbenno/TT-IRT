@@ -114,6 +114,11 @@ class TreeNode:
 
 
 class Tree:
+  node_list : list[TreeNode]
+  _root : TreeNode | None
+  _order : int
+  _dim2id : np.ndarray
+
   def __init__(self):
     self.node_list = []
     self._root = None
