@@ -60,7 +60,7 @@ class HT_Module(nn.Module):
       return eval
 
 @dataclass(frozen=True)
-class ARGS_tree_cross_training:
+class ARGS_tree_tensor_training:
   verbose : int = 0
   Nx : int = 100
   Ny : int = 10
@@ -86,7 +86,7 @@ class ARGS_tree_cross_training:
 def RMS(x, **kwargs):
   return np.sqrt(np.mean(np.square(x), **kwargs))
 
-def tree_tensor_training(args: ARGS_tree_cross_training):
+def tree_tensor_training(args: ARGS_tree_tensor_training):
   print('Running tree tensor training...')
   if args.verbose: print(args)
 

@@ -59,7 +59,9 @@ class TreeBasedTensor:
     if (tree is None) and isinstance(cores, TreeBasedTensor):
       # Create a copy
       self.tree = copy.deepcopy(cores.tree)
-      self.cores = NodeIndexedList([core.detach().clone() for core in cores.cores])
+      self.cores = NodeIndexedList(
+        [core.detach().clone().to(self.device, self.dtype) for core in cores.cores]
+        )
       self.shape = cores.shape
 
     elif isinstance(cores, (list, torch.tensor)) and isinstance(
