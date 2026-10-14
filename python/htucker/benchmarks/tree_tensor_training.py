@@ -195,7 +195,7 @@ def tree_tensor_training(args: ARGS_tree_tensor_training):
     y = rng.integers(0, tensor_shape[1:]) # random index in param space
     C_eval = torch.ravel(model.tensor[:, *y]) # eval in full physical space
     X = np.hstack([np.arange(args.Nx).reshape((-1,1)), np.tile(y, [args.Nx,1])])
-    C_true = cfun(X)
+    C_true = cfun(X).to(device=args.device)
     errs[i] = RMS((C_eval-C_true).numpy(force=True))
 
   stats['MC_errors'] = errs
