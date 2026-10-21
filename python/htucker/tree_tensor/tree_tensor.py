@@ -122,9 +122,12 @@ class TreeBasedTensor:
     return self[slices]
 
   @staticmethod
-  def randn(tree: Tree, shape, rank: int, seed=None) -> TreeBasedTensor:
+  def randn(tree: Tree, shape, rank: int, seed=None, scale: float = 1.) -> TreeBasedTensor:
     """
-    Build a tensor with cores initizialized from the standard normal distribution.
+    Build a tensor with normally distributed cores.
+
+    Each entry of the tensor
+    then has variance scale**2, independent of the rank and the tree.
 
     Parameters
     ----------
@@ -136,6 +139,8 @@ class TreeBasedTensor:
       Uniform rank for initialization.
     seed: int, optional
       Seed for the rng. Default uses system entropy.
+    scale: float, optional
+      Standard deviation of the tensor entries. Default is 1.
     """
     assert tree.order == len(shape), \
       f'Tree order must match shape ({tree.order} != {len(shape)}).'
@@ -143,12 +148,13 @@ class TreeBasedTensor:
     rng = np.random.default_rng(seed)
     cores = []
     for node in tree.node_list:
+      fan_in = rank ** node.n_children
       if node.isleaf:
         cores += [rng.standard_normal((shape[node.dim], rank))]
       elif node.isroot:
-        cores += [rng.standard_normal(node.n_children * (rank,) + (1,))]
+        cores += [scale / np.sqrt(fan_in) * rng.standard_normal(node.n_children * (rank,) + (1,))]
       else:
-        cores += [rng.standard_normal(node.n_children * (rank,) + (rank,))]
+        cores += [1. / np.sqrt(fan_in) * rng.standard_normal(node.n_children * (rank,) + (rank,))]
 
     return TreeBasedTensor(cores, tree)
 
