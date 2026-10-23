@@ -53,37 +53,36 @@ def svd_cut_torch(A, tol, alpha=0., norm=2):
 
 
 class TreeBasedTensor:
-  def __init__(self, cores, tree: Tree = None, dtype=torch.float64, device=None):
-    self.dtype = dtype
-    self.device = device
+  def __init__(self, cores, tree: Tree = None, dtype=None, device=None):
+    """
+    Copy of a TreeBasedTensor (tree is None), or tensor from a list of torch or
+    numpy cores and a tree. 
+    
+    The cores are always copied, while dtype and device default are inherited 
+    unless specified.
+    """
     if (tree is None) and isinstance(cores, TreeBasedTensor):
       # Create a copy
       self.tree = copy.deepcopy(cores.tree)
-      self.cores = NodeIndexedList(
-        [core.detach().clone().to(self.device, self.dtype) for core in cores.cores]
-        )
-      self.shape = cores.shape
+      shape = cores.shape
+      cores = cores.cores
 
-    elif isinstance(cores, (list, torch.tensor)) and isinstance(
-        tree, Tree):
-      assert tree.n_nodes == len(cores), f'Number of tree nodes must match number of cores ({tree.n_nodes} != {len(cores)}).'
-      if dtype is None: self.dtype = cores[0].dtype
-      if device is None: self.device = cores[0].device
-      self.tree = copy.deepcopy(tree)
-      self.cores = NodeIndexedList([x.detach().clone().to(device=self.device, dtype=self.dtype) for x in cores])
-      self.shape = tuple(cores[tree.dim2id(i)].shape[0] for i in range(tree.order))
-
-    elif isinstance(cores, (list, np.ndarray)) and isinstance(
+    elif isinstance(cores, (list, tuple, np.ndarray)) and isinstance(
         tree, Tree):
       assert tree.n_nodes == len(cores), f'Number of tree nodes must match number of cores ({tree.n_nodes} != {len(cores)}).'
       self.tree = copy.deepcopy(tree)
-      self.cores = NodeIndexedList([torch.from_numpy(x).to(device=self.device, dtype=self.dtype) for x in cores])
-      self.shape = tuple(cores[tree.dim2id(i)].shape[0] for i in range(tree.order))
+      cores = [torch.from_numpy(x) if isinstance(x, np.ndarray) else x for x in cores]
+      shape = tuple(cores[tree.dim2id(i)].shape[0] for i in range(tree.order))
 
     else:
       raise NotImplementedError(
         "Constructor not implemented for the " "provided arguments."
       )
+
+    self.dtype = cores[0].dtype if dtype is None else dtype
+    self.device = cores[0].device if device is None else torch.device(device)
+    self.cores = NodeIndexedList([x.detach().clone().to(device=self.device, dtype=self.dtype) for x in cores])
+    self.shape = shape
 
   @property
   def ndim(self):
