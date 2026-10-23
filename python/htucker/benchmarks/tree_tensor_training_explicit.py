@@ -56,7 +56,6 @@ class ExplicitGradTreeTensor:
   def set_indices(self, indices):
     self.indices = torch.atleast_2d(indices)
     self.U = NodeIndexedList(self.tree.n_nodes * [None])
-    self.E = NodeIndexedList(self.tree.n_nodes * [None])
 
   def _rank_label(self, node: TreeNode):
     return ('r', node.id)
@@ -72,9 +71,9 @@ class ExplicitGradTreeTensor:
     else:
       return core, [self._rank_label(c) for c in node.children] + [self._rank_label(node)]
 
-  def _env_ops(self, node: TreeNode):
-    """ All operands which together with the core of node contract to f. """
-    return [self.E[node]] + [self.U[c] for c in node.children]
+  def _env_ops(self, node: TreeNode, E):
+    """ All operands which together with the core of node contract to f (E is the environment of node). """
+    return [E] + [self.U[c] for c in node.children]
 
   def update_up(self, node: TreeNode):
     """ Recompute the subtree contraction U[node] (children must be up to date). """
@@ -82,16 +81,44 @@ class ExplicitGradTreeTensor:
     out = _free_labels(ops) + [self._rank_label(node)]
     self.U[node] = (_contract(*ops, out=out), out)
 
-  def update_env(self, node: TreeNode):
-    """ Recompute the environment E[node] (parent environment and siblings must be up to date). """
+  def env(self, node: TreeNode, E_parent=None):
+    """ Environment of node, computed from the environment E_parent of its parent (siblings must be up to date). """
     if node.isroot:
       root_core = self.tensor.cores[node]
-      self.E[node] = (torch.ones(1, dtype=root_core.dtype, device=root_core.device), [self._rank_label(node)])
-      return
+      return torch.ones(1, dtype=root_core.dtype, device=root_core.device), [self._rank_label(node)]
     parent = node.parent
-    ops = [self._core_op(parent), self.E[parent]] + [self.U[s] for s in parent.children if s.id != node.id]
+    ops = [self._core_op(parent), E_parent] + [self.U[s] for s in parent.children if s.id != node.id]
     out = _free_labels(ops) + [self._rank_label(node)]
-    self.E[node] = (_contract(*ops, out=out), out)
+    return _contract(*ops, out=out), out
+
+  def dfs(self, update_up: bool = False):
+    """
+    Depth-first traversal yielding (node, E) in pre-order, where E is the environment of node.
+    Requires all U to be up to date.
+
+    Environments are computed lazily when the generator is advanced, so the core of a yielded
+    node may be modified before advancing. With update_up, the subtree contraction of every node
+    is updated once its subtree is finished. The environment of a node is freed as soon as the
+    environment of its last child is computed, since most environments carry the physical
+    dimension (N x Nx x r). Consumers should not hold on to E beyond the loop body.
+    """
+    root = self.tree.root
+    stack = [[root, self.env(root), 0]] # node, environment, index of next child
+    yield root, stack[-1][1]
+    while stack:
+      frame = stack[-1]
+      node, i = frame[0], frame[2]
+      if i == node.n_children:
+        stack.pop()
+        if update_up: self.update_up(node)
+        continue
+      child = node.children[i]
+      E = self.env(child, frame[1])
+      frame[2] += 1
+      if i == node.n_children - 1: frame[1] = None
+      stack.append([child, E, 0])
+      yield child, E
+      del E
 
   def up_sweep(self, node: TreeNode = None):
     if node is None: node = self.tree.root
@@ -102,21 +129,20 @@ class ExplicitGradTreeTensor:
   def forward(self, indices):
     self.set_indices(indices)
     self.up_sweep()
-    self.update_env(self.tree.root)
     return self.value()
 
   def value(self):
     """ Tensor evaluation (N, Nx) from the current root subtree contraction. """
     root = self.tree.root
-    return _contract(self.U[root], self.E[root], out=['n', 'p'])
+    return _contract(self.U[root], self.env(root), out=['n', 'p'])
 
-  def local_apply(self, node: TreeNode, core):
+  def local_apply(self, node: TreeNode, core, E):
     """ f = A_node(core), linear in core. """
-    return _contract(self._core_op(node, core), *self._env_ops(node), out=['n', 'p'])
+    return _contract(self._core_op(node, core), *self._env_ops(node, E), out=['n', 'p'])
 
-  def local_grad(self, node: TreeNode, R):
+  def local_grad(self, node: TreeNode, R, E):
     """ A_node^T R for R of shape (N, Nx). """
-    ops = [(R, ['n', 'p'])] + self._env_ops(node)
+    ops = [(R, ['n', 'p'])] + self._env_ops(node, E)
     _, labels = self._core_op(node)
     if node.isleaf and node.dim != self.phys_dim:
       rows = _contract(*ops, out=labels)
@@ -151,74 +177,62 @@ class ARGS_tree_tensor_training_explicit:
   N_mc : int = 1000
   device : str = 'cpu'
 
-def optimize_core(model: ExplicitGradTreeTensor, node: TreeNode, target, args: ARGS_tree_tensor_training_explicit, lr: float):
+def optimize_core(model: ExplicitGradTreeTensor, node: TreeNode, E, target, args: ARGS_tree_tensor_training_explicit, lr: float):
   """
-  Run args.epoch_inner gradient steps on the core of node, all other cores fixed.
+  Run args.epoch_inner gradient steps on the core of node (with environment E), all other cores fixed.
   Since f is linear in the core, only local contractions are needed per step.
+  No values are moved to the host, so on GPU the steps run without synchronization.
   """
   core = model.tensor.cores[node]
-  losses = []
 
   if args.optimizer == 'lbfgs':
     # one step runs up to epoch_inner iterations, lr schedule is not used.
-    # losses includes the evaluations of the line search.
     opt = optim.LBFGS([core], lr=1, max_iter=args.epoch_inner, line_search_fn='strong_wolfe')
     def closure():
-      res = model.local_apply(node, core) - target
-      loss = torch.mean(torch.square(res))
-      losses.append(loss.item())
+      res = model.local_apply(node, core, E) - target
       # LBFGS flattens the gradient with view, einsum output may not be contiguous
-      core.grad = model.local_grad(node, 2 * res / res.numel()).contiguous()
-      return loss
+      core.grad = model.local_grad(node, 2 * res / res.numel(), E).contiguous()
+      return torch.mean(torch.square(res))
     opt.step(closure)
     core.grad = None
-    return losses
+    return
 
   if args.optimizer == 'adam':
     opt = optim.Adam([core], lr=lr)
 
-  f = model.local_apply(node, core)
+  f = model.local_apply(node, core, E)
   for _ in range(args.epoch_inner):
     res = f - target
-    losses += [torch.mean(torch.square(res)).item()]
-    G = model.local_grad(node, 2 * res / res.numel())
+    G = model.local_grad(node, 2 * res / res.numel(), E)
 
     if args.optimizer == 'adam':
       core.grad = G
       opt.step()
-      f = model.local_apply(node, core)
+      f = model.local_apply(node, core, E)
     elif args.optimizer == 'sd':
-      # exact line search: f(core - a*G) = f - a*A(G)
-      AG = model.local_apply(node, G)
+      # exact line search: f(core - a*G) = f - a*A(G), step 0 if A(G) = 0
+      AG = model.local_apply(node, G, E)
       AG_sq = torch.sum(AG * AG)
-      if AG_sq == 0: break
-      a = torch.sum(res * AG) / AG_sq
+      a = torch.where(AG_sq > 0, torch.sum(res * AG) / AG_sq, 0.)
       core -= a * G
       f = f - a * AG
     else:
       raise ValueError(f'Unknown optimizer {args.optimizer}')
 
   core.grad = None
-  return losses
 
-def sweep(model: ExplicitGradTreeTensor, node: TreeNode, target, args: ARGS_tree_tensor_training_explicit, lr: float):
+def sweep(model: ExplicitGradTreeTensor, target, args: ARGS_tree_tensor_training_explicit, lr: float):
   """
   Depth-first sweep: optimize node, then descend into children. Environments are
   passed down and subtree contractions are updated on the way up, so every
   core is optimized with all other cores at their latest values.
 
-  Requires E[node] and all U to be up to date. Environments of the subtree are
-  freed once they are no longer needed, since most of them carry the physical
-  dimension (N x Nx x r).
+  Requires all U to be up to date.
   """
-  if args.verbose: print('\r' + f'core.{node.id}', end='')
-  optimize_core(model, node, target, args, lr)
-  for i, child in enumerate(node.children):
-    model.update_env(child)
-    if i == node.n_children - 1: model.E[node] = None
-    sweep(model, child, target, args, lr)
-    model.update_up(child)
-  model.E[node] = None
+  for node, E in model.dfs(update_up=True):
+    if args.verbose: print('\r' + f'core.{node.id}', end='')
+    optimize_core(model, node, E, target, args, lr)
+    del E
 
 def tree_tensor_training_explicit(args: ARGS_tree_tensor_training_explicit, return_tensor: bool = False):
   print('Running tree tensor training (explicit gradients)...')
@@ -277,7 +291,7 @@ def tree_tensor_training_explicit(args: ARGS_tree_tensor_training_explicit, retu
   test_ind = torch.vstack(test_ind).to(args.device)
   test_eval = torch.vstack(test_eval).to(args.device)
 
-  tensor = TreeBasedTensor.randn(tree, tensor_shape, args.rinit, device=args.device)
+  tensor = TreeBasedTensor.randn(tree, tensor_shape, args.rinit, seed=args.rng_seed, device=args.device)
   model = ExplicitGradTreeTensor(tensor)
 
   lr = args.lr_start
@@ -286,10 +300,7 @@ def tree_tensor_training_explicit(args: ARGS_tree_tensor_training_explicit, retu
     for epoch in range(args.epoch_outer):
       model.set_indices(train_ind)
       model.up_sweep()
-      model.update_env(model.tree.root)
-      sweep(model, model.tree.root, train_eval, args, lr)
-      model.update_up(model.tree.root)
-      model.update_env(model.tree.root)
+      sweep(model, train_eval, args, lr)
       stats['train_loss'] += [torch.nn.functional.mse_loss(model.value(), train_eval).item()]
 
       model.tensor.round(args.eps)
