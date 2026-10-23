@@ -143,7 +143,7 @@ def tree_tensor_training(args: ARGS_tree_tensor_training):
   test_ind = torch.vstack(test_ind).to(args.device)
   test_eval = torch.vstack(test_eval).to(args.device)
 
-  tensor = TreeBasedTensor.randn(tree, tensor_shape, args.rinit, device=args.device)
+  tensor = TreeBasedTensor.randn(tree, tensor_shape, args.rinit, seed=args.rng_seed, device=args.device)
   model = HT_Module(tensor)
 
   lr = args.lr_start
