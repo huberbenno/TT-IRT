@@ -339,11 +339,19 @@ class TreeBasedTensor:
     """
     return torch.sqrt(self.dot(self))[0]
 
-  def round(self, tol:float = 0.) -> TreeBasedTensor:
+  def round(self, tol:float = 0., device='cpu') -> TreeBasedTensor:
     """
     Truncate tensor ranks to specified tolerance using SVD.
+
+    The truncation runs on device and the cores are moved back afterwards. The
+    default is the CPU, since the SVDs are small and on a GPU each of them
+    synchronizes with the host anyway. With device=None the cores are not moved.
     """
     with torch.no_grad():
+      core_device = self.cores[self.tree.root].device
+      if device is not None:
+        for node in self.tree.node_list: self.cores[node] = self.cores[node].to(device)
+
       def worker_trunc(node):
         core = self.cores[node]
         if node.isleaf:
@@ -375,6 +383,8 @@ class TreeBasedTensor:
 
       worker_trunc(self.tree.root)
 
+      if device is not None:
+        for node in self.tree.node_list: self.cores[node] = self.cores[node].to(core_device)
       return self
 
   def requires_grad_(self, requires_grad: bool = True):
