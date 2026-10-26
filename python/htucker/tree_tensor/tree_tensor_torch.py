@@ -52,14 +52,24 @@ def svd_cut_torch(A, tol, alpha=0., norm=2):
     return U[:,:rank], S_reg[:rank], V[:rank]
 
 
+def _kron_core(core1, core2):
+  """
+  Kronecker product of two cores along every axis: each axis of the result has size
+  n1 * n2, with index i1 * n2 + i2.
+  """
+  perm_interleave = [i for pair in zip(range(core1.ndim), range(core1.ndim, 2 * core1.ndim)) for i in pair]
+  new_shape = [s1 * s2 for s1, s2 in zip(core1.shape, core2.shape)]
+  return torch.tensordot(core1, core2, dims=0).permute(perm_interleave).reshape(new_shape)
+
+
 class TreeBasedTensor:
   def __init__(self, cores, tree: Tree = None, dtype=None, device=None):
     """
     Copy of a TreeBasedTensor (tree is None), or tensor from a list of torch or
     numpy cores and a tree. 
     
-    The cores are always copied, while dtype and device default are inherited 
-    unless specified.
+    The cores are always copied, while dtype and device are inherited unless 
+    specified.
     """
     if (tree is None) and isinstance(cores, TreeBasedTensor):
       # Create a copy
@@ -239,11 +249,7 @@ class TreeBasedTensor:
         self.cores[node] = new_core.reshape(self.shape[node.dim], -1)
 
       else:
-        perm_interleave = np.empty(2 * core1.ndim, dtype=int)
-        perm_interleave[::2] = np.arange(core1.ndim)
-        perm_interleave[1::2] = np.arange(core1.ndim, 2* core1.ndim)
-        new_shape = np.array(core1.shape) * np.array(core2.shape)
-        self.cores[node] = torch.tensordot(core1, core2, dims=0).transpose(perm_interleave).reshape(new_shape)
+        self.cores[node] = _kron_core(core1, core2)
 
         for child in node.children:
           worker(child)
@@ -273,9 +279,9 @@ class TreeBasedTensor:
         for child in node.children:
           worker(child)
 
-        new_shape = np.array(core1.shape) + np.array(core2.shape)
+        new_shape = [s1 + s2 for s1, s2 in zip(core1.shape, core2.shape)]
         if node.isroot: new_shape[-1] = 1
-        new_core = torch.zeros(new_shape, device=self.device, dtype=self.dtype)
+        new_core = torch.zeros(new_shape, device=core1.device, dtype=core1.dtype)
         slices1 = tuple(slice(d) for d in core1.shape)
         new_core[*slices1] += core1
         slices2 = tuple(slice(-d, None) for d in core2.shape)
@@ -315,14 +321,10 @@ class TreeBasedTensor:
       core1 = self.cores[node]
       core2 = other.cores[node]
       if node.isleaf:
-        return np.einsum('ai,aj->ij', core1, core2).ravel()
+        return torch.einsum('ai,aj->ij', core1, core2).ravel()
 
       else:
-        perm_interleave = np.empty(2 * core1.ndim, dtype=int)
-        perm_interleave[::2] = np.arange(core1.ndim)
-        perm_interleave[1::2] = np.arange(core1.ndim, 2* core1.ndim)
-        new_shape = np.array(core1.shape) * np.array(core2.shape)
-        core = torch.tensordot(core1, core2, dims=0).transpose(perm_interleave).reshape(new_shape)
+        core = _kron_core(core1, core2)
 
         for child in node.children:
           partial = worker(child)
