@@ -101,7 +101,7 @@ class TreeNode:
       and self.id == other.id \
       and self._parent == other._parent \
       and self.dim == other.dim \
-      and all(c1 == c2 for c1,c2 in zip(self._children, other._children))
+      and tuple(self._children) == tuple(other._children)
     
   
   def __repr__(self) -> str:
@@ -155,7 +155,9 @@ class Tree:
   
   def __eq__(self, other):
     
-    return isinstance(other, Tree) and all(n1 == n2 for n1,n2 in zip(self.node_list, other.node_list))
+    return isinstance(other, Tree) \
+      and self.n_nodes == other.n_nodes \
+      and all(n1 == n2 for n1,n2 in zip(self.node_list, other.node_list))
   
   def dim2id(self, dim: int) -> int:
     """
@@ -238,8 +240,9 @@ class Tree:
     while not node.isroot:
       path.append(node.child_ind)
       node = node.parent
-    
-    return path.reverse()
+
+    path.reverse()
+    return path
   
   def path_to_dim(self, dim: int) -> list:
     """
