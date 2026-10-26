@@ -10,7 +10,7 @@ import torch
 from torch import optim
 from tree.tree import Tree, TreeNode, NodeIndexedList
 from tree_tensor.tree_tensor_torch import TreeBasedTensor
-from tree.tree_util import balanced_binary_tupletree, linear_tupletree, weighted_binary_tupletree, random_tupletree
+from tree.tree_util import zero_root_tupletree
 
 
 def _contract(*operands, out):
@@ -253,15 +253,11 @@ def tree_tensor_training_explicit(args: ARGS_tree_tensor_training_explicit, retu
 
   tensor_shape = (args.Nx,) + tensor_shape
 
-  if args.tree_type == 'linear':
-    tree = Tree.from_tupletree(linear_tupletree(args.n_param))
-  elif args.tree_type == 'balanced':
-    tree = Tree.from_tupletree(balanced_binary_tupletree(args.n_param))
-  elif args.tree_type == 'weighted':
-    w = (np.arange(args.n_param)+1)**-args.tree_weight_decay
-    tree = Tree.from_tupletree(weighted_binary_tupletree(args.n_param, w))
-  elif args.tree_type == 'random':
-    tree = Tree.from_tupletree(random_tupletree(args.n_param, seed=args.rng_seed))
+  tree_kwargs = {
+    'weighted': dict(weights=(np.arange(args.n_param)+1)**-args.tree_weight_decay),
+    'random': dict(seed=args.rng_seed),
+  }.get(args.tree_type, {})
+  tree = Tree.from_tupletree(zero_root_tupletree(args.n_param, args.tree_type, **tree_kwargs))
 
   stats['sacking_index'] = np.sum(np.array(tree.get_leaf_depths()[1:])-1)
   colles_ind = 0

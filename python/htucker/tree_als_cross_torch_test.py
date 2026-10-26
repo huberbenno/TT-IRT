@@ -134,12 +134,12 @@ import torch
 from tree import Tree
 from python.htucker.tree_tensor.tree_tensor_torch import TreeBasedTensor
 from python.htucker.tree_cross.tree_cross_torch import TreeCross
-from python.htucker.tree.tree_util import balanced_binary_tupletree, linear_tupletree
+from python.htucker.tree.tree_util import zero_root_tupletree
 
 tol = 1e-3
 param_shape = tuple([Ny] * n_param)
 
-tree = Tree.from_tupletree(balanced_binary_tupletree(n_param))
+tree = Tree.from_tupletree(zero_root_tupletree(n_param, 'balanced'))
 # tree = Tree.from_tupletree((0,(1,2)))
 tree.print()
 C_a = TreeBasedTensor.randn(tree, (Nx,) + param_shape, Ny, dtype=torch.float64)
