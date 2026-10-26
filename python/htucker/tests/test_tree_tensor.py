@@ -1,0 +1,313 @@
+import copy
+
+import numpy as np
+import pytest
+import torch
+
+from tree.tree import Tree
+from tree.tree_util import linear_tupletree, balanced_binary_tupletree, weighted_binary_tupletree, \
+  random_tupletree, random_nary_tupletree
+from tree_tensor import tree_tensor as tt_numpy, tree_tensor_torch as tt_torch
+
+
+# ---------- backends ----------
+
+class NumpyBackend:
+  TT = tt_numpy.TreeBasedTensor
+  float32, float64 = np.float32, np.float64
+
+  @staticmethod
+  def randn(tree, shape, rank, seed, dtype=np.float64):
+    x = NumpyBackend.TT.randn(tree, shape, rank, seed=seed)
+    return NumpyBackend.TT([core.astype(dtype) for core in x.cores], tree)
+
+class TorchBackend:
+  TT = tt_torch.TreeBasedTensor
+  float32, float64 = torch.float32, torch.float64
+
+  @staticmethod
+  def randn(tree, shape, rank, seed, dtype=torch.float64, device=None):
+    return TorchBackend.TT.randn(tree, shape, rank, seed=seed, dtype=dtype, device=device)
+
+@pytest.fixture(params=[NumpyBackend, TorchBackend], ids=['numpy', 'torch'])
+def backend(request):
+  return request.param
+
+
+# ---------- torch constructor ----------
+
+# dim 0 is not a child of the root and the leaves are not ordered by dimension
+BASE_TREE = balanced_binary_tupletree([2, 0, 3, 1, 4])
+
+TorchTT = TorchBackend.TT
+
+def make(device='cpu', dtype=torch.float64):
+  tree = Tree.from_tupletree(BASE_TREE)
+  return TorchTT.randn(tree, (3,) * tree.order, 2, seed=0, dtype=dtype, device=device)
+
+# meta tensors carry a device without data, so device handling is tested without a GPU
+@pytest.mark.parametrize('device', ['cpu', 'meta'])
+@pytest.mark.parametrize('copy', [TorchTT, TorchTT.copy])
+def test_copy_keeps_device(device, copy):
+  tensor = make(device)
+  res = copy(tensor)
+  assert res.device == torch.device(device)
+  assert all(core.device == torch.device(device) for core in res.cores)
+
+def test_copy_to_device():
+  res = TorchTT(make('cpu'), device='meta')
+  assert res.device == torch.device('meta')
+  assert all(core.device == torch.device('meta') for core in res.cores)
+
+@pytest.mark.parametrize('dtype', [torch.float32, torch.float64])
+@pytest.mark.parametrize('copy', [TorchTT, TorchTT.copy])
+def test_copy_keeps_dtype(dtype, copy):
+  res = copy(make(dtype=dtype))
+  assert res.dtype == dtype
+  assert all(core.dtype == dtype for core in res.cores)
+
+def test_copy_to_dtype():
+  res = TorchTT(make(dtype=torch.float32), dtype=torch.float64)
+  assert res.dtype == torch.float64
+  assert all(core.dtype == torch.float64 for core in res.cores)
+
+@pytest.mark.parametrize('dtype', [torch.float32, torch.float64])
+def test_from_torch_cores_keeps_dtype(dtype):
+  tensor = make(dtype=dtype)
+  res = TorchTT(list(tensor.cores), tensor.tree)
+  assert res.dtype == dtype and res.device == torch.device('cpu')
+  assert res.shape == tensor.shape
+
+@pytest.mark.parametrize('np_dtype, dtype', [(np.float32, torch.float32), (np.float64, torch.float64)])
+def test_from_numpy_cores(np_dtype, dtype):
+  tensor = make()
+  cores = [core.numpy().astype(np_dtype) for core in tensor.cores]
+  res = TorchTT(cores, tensor.tree)
+  assert res.dtype == dtype and res.device == torch.device('cpu')
+  assert res.shape == tensor.shape
+  assert all(torch.allclose(x, y.to(dtype)) for x, y in zip(res.cores, tensor.cores))
+  # the cores are copied, not shared with the numpy arrays
+  cores[0][:] = 0
+  assert not torch.all(res.cores[0] == 0)
+
+
+# ---------- numpy constructor ----------
+
+NumpyTT = NumpyBackend.TT
+
+@pytest.mark.parametrize('copy', [NumpyTT, NumpyTT.copy])
+def test_numpy_copy_is_deep(copy):
+  tree = Tree.from_tupletree(BASE_TREE)
+  x = NumpyTT.randn(tree, (3,) * tree.order, 2, seed=0)
+  X = x.numpy()
+  res = copy(x)
+  for core in res.cores:
+    core[...] = 0
+  assert np.array_equal(x.numpy(), X)
+
+def test_numpy_from_cores():
+  tree = Tree.from_tupletree(BASE_TREE)
+  x = NumpyTT.randn(tree, (3,) * tree.order, 2, seed=0)
+  cores = [core.copy() for core in x.cores]
+  res = NumpyTT(cores, tree)
+  assert res.shape == x.shape
+  assert np.array_equal(res.numpy(), x.numpy())
+  # the cores are copied, not shared with the input arrays
+  cores[0][:] = 0
+  assert not np.all(res.cores[0] == 0)
+
+def test_unsupported_input(backend):
+  tree = Tree.from_tupletree(BASE_TREE)
+  with pytest.raises(NotImplementedError):
+    backend.TT(1.0, tree)
+
+
+# ---------- arithmetic ----------
+
+def orderings(n, n_shuffled=3, seed=0):
+  """ Distinct orderings of the dims 0..n-1: identity, reversed and n_shuffled seeded shuffles. """
+  dims = list(range(n))
+  res = [dims, dims[::-1]]
+  rng = np.random.default_rng(seed)
+  while len(res) < 2 + n_shuffled:
+    perm = rng.permutation(n).tolist()
+    if perm not in res: res.append(perm)
+  return res
+
+# order and builder of each non random tree type
+BUILDERS = {
+  'balanced': (5, balanced_binary_tupletree),
+  'linear': (5, linear_tupletree), # ends in a node with a single child
+  'weighted': (6, lambda dims: weighted_binary_tupletree(dims, 0.5**np.arange(len(dims)), mode='huffmann')),
+}
+# every non random tree type over several orderings of the dims, so that dim 0 is at
+# varying depths and the leaf order differs from the dimension order
+TREES = {
+  f"{name}-{''.join(map(str, dims))}": builder(dims)
+  for name, (n, builder) in BUILDERS.items() for dims in orderings(n)
+}
+TREES['random'] = random_tupletree(range(6), seed=1)
+TREES['nary'] = random_nary_tupletree(6, max_arity=4, seed=5) # arity 4, dim 0 at depth 3
+# distinct mode sizes, so that mixed up axes show up
+SIZES = (4, 2, 3, 5, 2, 3, 4)
+RX, RY = 2, 3
+
+def make_random(backend, tree, rank, seed, shape=None, **kwargs):
+  if shape is None: shape = SIZES[:tree.order]
+  return backend.randn(tree, shape, rank, seed=seed, **kwargs)
+
+def operands(backend, tree_type, **kwargs):
+  """ Two tensors on the same tree with different ranks. """
+  tree = Tree.from_tupletree(TREES[tree_type])
+  return make_random(backend, tree, RX, seed=0, **kwargs), make_random(backend, tree, RY, seed=1, **kwargs)
+
+def ranks(tensor):
+  """ Rank of every edge (last axis of every core except the root's). """
+  return [tensor.cores[node].shape[-1] for node in tensor.tree.node_list if not node.isroot]
+
+def assert_dense(tensor, expected, rtol=1e-12, atol=1e-12):
+  res = tensor.numpy()
+  assert res.shape == expected.shape
+  assert np.allclose(res, expected, rtol=rtol, atol=atol)
+
+def snapshot(tensor):
+  return [copy.deepcopy(core) for core in tensor.cores]
+
+def unchanged(tensor, cores):
+  return all(np.array_equal(np.asarray(x), np.asarray(y)) for x, y in zip(tensor.cores, cores))
+
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_scalar_mul(backend, tree_type):
+  x, _ = operands(backend, tree_type)
+  X = x.numpy()
+  for res in [x * 2.5, 2.5 * x, x * np.float64(2.5)]:
+    assert_dense(res, 2.5 * X)
+    assert ranks(res) == ranks(x)
+
+def test_scalar_mul_torch_scalar():
+  x, _ = operands(TorchBackend, 'balanced-01234')
+  assert_dense(x * torch.tensor(2.5, dtype=torch.float64), 2.5 * x.numpy())
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_scalar_imul(backend, tree_type):
+  x, _ = operands(backend, tree_type)
+  X = x.numpy()
+  z = x.copy()
+  z_id = id(z)
+  z *= 2.5
+  assert id(z) == z_id
+  assert_dense(z, 2.5 * X)
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_hadamard(backend, tree_type):
+  x, y = operands(backend, tree_type)
+  X, Y = x.numpy(), y.numpy()
+  for res in [x * y, y * x]:
+    assert_dense(res, X * Y)
+    assert ranks(res) == [rx * ry for rx, ry in zip(ranks(x), ranks(y))]
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_hadamard_imul(backend, tree_type):
+  x, y = operands(backend, tree_type)
+  X, Y = x.numpy(), y.numpy()
+  z = x.copy()
+  z_id = id(z)
+  z *= y
+  assert id(z) == z_id
+  assert_dense(z, X * Y)
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_add(backend, tree_type):
+  x, y = operands(backend, tree_type)
+  X, Y = x.numpy(), y.numpy()
+  res = x + y
+  assert_dense(res, X + Y)
+  assert ranks(res) == [rx + ry for rx, ry in zip(ranks(x), ranks(y))]
+  assert res.cores[res.tree.root].shape[-1] == 1
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_iadd(backend, tree_type):
+  x, y = operands(backend, tree_type)
+  X, Y = x.numpy(), y.numpy()
+  z = x.copy()
+  z_id = id(z)
+  z += y
+  assert id(z) == z_id
+  assert_dense(z, X + Y)
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_sub_neg(backend, tree_type):
+  x, y = operands(backend, tree_type)
+  X, Y = x.numpy(), y.numpy()
+  assert_dense(x - y, X - Y)
+  assert_dense(-x, -X)
+  assert_dense(x - x, np.zeros_like(X), atol=1e-12 * np.linalg.norm(X))
+  z = x.copy()
+  z_id = id(z)
+  z -= y
+  assert id(z) == z_id
+  assert_dense(z, X - Y)
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+@pytest.mark.parametrize('op', ['scalar_mul', 'neg', 'mul', 'add', 'sub'])
+def test_operands_unchanged(backend, tree_type, op):
+  x, y = operands(backend, tree_type)
+  x_cores, y_cores = snapshot(x), snapshot(y)
+  {'scalar_mul': lambda: x * 2., 'neg': lambda: -x, 'mul': lambda: x * y,
+   'add': lambda: x + y, 'sub': lambda: x - y}[op]()
+  assert unchanged(x, x_cores)
+  assert unchanged(y, y_cores)
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_dot_norm(backend, tree_type):
+  x, y = operands(backend, tree_type)
+  X, Y = x.numpy(), y.numpy()
+  assert x.dot(y).item() == pytest.approx(np.sum(X * Y), rel=1e-12)
+  assert y.dot(x).item() == pytest.approx(x.dot(y).item(), rel=1e-12)
+  assert x.norm().item() == pytest.approx(np.linalg.norm(X), rel=1e-12)
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_chained(backend, tree_type):
+  x, y = operands(backend, tree_type)
+  X, Y = x.numpy(), y.numpy()
+  assert_dense((x + y) * x, (X + Y) * X)
+
+def test_invalid_operand_type(backend):
+  x, _ = operands(backend, 'balanced-01234')
+  with pytest.raises(TypeError):
+    x + 1.0
+  with pytest.raises(TypeError):
+    x * 'a'
+
+@pytest.mark.parametrize('op', ['add', 'mul', 'dot'])
+def test_mismatch(backend, op):
+  fun = {'add': lambda a, b: a + b, 'mul': lambda a, b: a * b, 'dot': lambda a, b: a.dot(b)}[op]
+  x, _ = operands(backend, 'balanced-01234')
+  # same order, different tree
+  other_tree = make_random(backend, Tree.from_tupletree(TREES['linear-01234']), RY, seed=1)
+  with pytest.raises(AssertionError):
+    fun(x, other_tree)
+  # same tree, different shape
+  other_shape = make_random(backend, x.tree, RY, seed=1, shape=tuple(s + 1 for s in x.shape))
+  with pytest.raises(AssertionError):
+    fun(x, other_shape)
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_keeps_dtype(backend, tree_type):
+  x, y = operands(backend, tree_type, dtype=backend.float32)
+  X, Y = x.numpy(), y.numpy()
+  for res, expected in [(x * y, X * Y), (x + y, X + Y), (x - y, X - Y), (-x, -X), (2.5 * x, 2.5 * X)]:
+    if backend is TorchBackend:
+      assert res.dtype == torch.float32
+    assert all(core.dtype == backend.float32 for core in res.cores)
+    assert_dense(res, expected, rtol=1e-5, atol=1e-5)
+
+# meta tensors carry a device without data, so device handling is tested without a GPU
+@pytest.mark.parametrize('tree_type', TREES.keys())
+@pytest.mark.parametrize('op', ['mul', 'add'])
+def test_keeps_device(tree_type, op):
+  x, y = operands(TorchBackend, tree_type, device='meta')
+  res = x * y if op == 'mul' else x + y
+  assert res.device == torch.device('meta')
+  assert all(core.device == torch.device('meta') for core in res.cores)

@@ -254,7 +254,7 @@ class TreeBasedTensor:
 
         new_shape = np.array(core1.shape) + np.array(core2.shape)
         if node.isroot: new_shape[-1] = 1
-        new_core = np.zeros(new_shape)
+        new_core = np.zeros(new_shape, dtype=np.result_type(core1, core2))
         slices1 = tuple(slice(d) for d in core1.shape)
         new_core[*slices1] = core1
         slices2 = tuple(slice(-d, None) for d in core2.shape)
