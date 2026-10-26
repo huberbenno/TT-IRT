@@ -2,16 +2,17 @@ import pytest
 import torch
 
 from tree.tree import Tree
-from tree.tree_util import balanced_binary_tupletree, linear_tupletree, random_tupletree
+from tree.tree_util import zero_root_tupletree, random_nary_tupletree
 from tree_tensor.tree_tensor_torch import TreeBasedTensor
 from benchmarks.tree_tensor_training import HT_Module
 from benchmarks.tree_tensor_training_explicit import ExplicitGradTreeTensor, ARGS_tree_tensor_training_explicit, optimize_core
 
 
 TREES = {
-  'balanced': balanced_binary_tupletree(7),
-  'linear': linear_tupletree(5),
-  'random': random_tupletree(7, seed=1),
+  'balanced': zero_root_tupletree(7, 'balanced'),
+  'linear': zero_root_tupletree(5, 'linear'),
+  'random': zero_root_tupletree(7, 'random', seed=1),
+  'nary': random_nary_tupletree(6, max_arity=4, seed=5), # arity 4, dim 0 at depth 3
 }
 
 def setup(tupletree, N=50, rank=3):
@@ -76,16 +77,14 @@ def test_optimize_core_decreases_loss(tree_type, optimizer):
 
   with torch.no_grad():
     model.forward(ind)
-    # root and, descending along last children, a parameter leaf (index_add_ gradient path)
-    node = tree.root
-    E = model.env(node)
-    while True:
+    # all nodes on the path from the root to a parameter leaf (index_add_ gradient path)
+    leaf = tree.dim2leaf(tree.order - 1)
+    assert leaf.dim != model.phys_dim
+    path = [leaf]
+    while not path[-1].isroot: path.append(path[-1].parent)
+    E = None
+    for node in reversed(path):
+      E = model.env(node, E)
       loss_init = local_loss(node, E)
       optimize_core(model, node, E, target, args, lr=1e-2)
       assert local_loss(node, E) < loss_init, f'loss not decreased at node {node.id}'
-      if node.isleaf:
-        assert node.dim != model.phys_dim
-        break
-      child = node.children[-1]
-      E = model.env(child, E)
-      node = child
