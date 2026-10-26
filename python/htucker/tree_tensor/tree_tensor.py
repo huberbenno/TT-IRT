@@ -388,15 +388,15 @@ class TreeBasedTensor:
       self.cores[node] = q
       return r
     else:
-      old_shape = core.shape
       for i, child in enumerate(node.children):
         r = self._orth_subtree(child)
         core = np.tensordot(core, r, axes=(i,-1))
         core = np.moveaxis(core, -1, i)
 
-      core = core.reshape(-1, core.shape[-1])
-      q,r = np.linalg.qr(core)
-      self.cores[node] = q.reshape(old_shape)
+      # the ranks may have shrunk (reduced QR of cores with excessive ranks)
+      old_shape = core.shape
+      q,r = np.linalg.qr(core.reshape(-1, core.shape[-1]))
+      self.cores[node] = q.reshape(old_shape[:-1] + (-1,))
       return r
 
   def _orth_subtree_maxvol(self, node: TreeNode):

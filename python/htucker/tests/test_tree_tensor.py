@@ -269,6 +269,42 @@ def test_keeps_dtype(backend, tree_type):
     assert_dense(res, expected, rtol=1e-5, atol=1e-5)
 
 
+# ---------- orthogonalization ----------
+
+# the mode sizes in SIZES include 2, so ranks 3 and 10 exceed what some edges support
+# and the reduced QRs shrink them
+@pytest.mark.parametrize('tree_type', TREES.keys())
+@pytest.mark.parametrize('rank', [2, 3, 10])
+def test_orth_subtree(backend, tree_type, rank):
+  x = make_random(backend, Tree.from_tupletree(TREES[tree_type]), rank, seed=0)
+  X = x.numpy()
+  root = x.tree.root
+  r = x._orth_subtree(root)
+  # the root R factor holds the norm, put it back
+  x.cores[root] = x.cores[root] * r[0, 0]
+  assert_dense(x, X, rtol=1e-10, atol=1e-10 * np.linalg.norm(X))
+  for node in x.tree.node_list:
+    if node.isroot: continue
+    core = np.asarray(x.cores[node]).reshape(-1, x.cores[node].shape[-1])
+    assert np.allclose(core.T @ core, np.eye(core.shape[1]), atol=1e-12)
+    max_rank = x.shape[node.dim] if node.isleaf else np.prod([x.cores[c].shape[-1] for c in node.children])
+    assert core.shape[1] <= max_rank
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_orth_subtree_maxvol_excessive_rank(backend, tree_type):
+  x = make_random(backend, Tree.from_tupletree(TREES[tree_type]), 10, seed=0)
+  X = x.numpy()
+  x._orth_subtree_maxvol(x.tree.root)
+  assert_dense(x, X, rtol=1e-10, atol=1e-10 * np.linalg.norm(X))
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_round_excessive_rank(backend, tree_type):
+  x = make_random(backend, Tree.from_tupletree(TREES[tree_type]), 10, seed=0)
+  X = x.numpy()
+  x.round(0.)
+  assert_dense(x, X, rtol=1e-10, atol=1e-10 * np.linalg.norm(X))
+
+
 # ---------- random init ----------
 
 # one shuffled ordering per non random tree type: the distribution of the entries
