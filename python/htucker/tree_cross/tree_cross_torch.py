@@ -27,6 +27,8 @@ class TreeCross:
     self.indexset_dims_list = None
     self.n_eval = 0
     self.test_err = None
+    self.test_indices = None
+    self.test_values = None
     self.rng = np.random.default_rng(seed)
 
   def run(
@@ -65,10 +67,8 @@ class TreeCross:
       Number of randomly drawn rows added to every index selection on top of the
       maxvol rows. Default is 0.
     n_test: int, optional
-      If positive, the target is evaluated at n_test random indices after every
-      sweep (counted in n_eval). The relative RMS error there is stored in
-      test_err, and the sweeps only stop early once it is also below eps.
-      Default is 0.
+      If positive, the target is evaluated at n_test new random indices after
+      every sweep to test convergence. Default is 0.
     """
     if self.indexset_list is None or force_init:
       self._init()
@@ -214,17 +214,26 @@ class TreeCross:
 
           self.tensor.cores[node] = core
 
-    
+
+    # test points of this run, a new eval_f may be passed in the next one
+    self.test_indices = np.zeros((0, self.tensor.ndim), dtype=int)
+    self.test_values = torch.zeros(0, dtype=self.tensor.dtype, device=self.tensor.device)
+    self.test_err = None
+
     for iteration in range(n_iter):
       self.max_dx = 0
       worker(self.tensor.tree.root, np.zeros((1,0), dtype=int), [])
 
       if n_test > 0:
-        # independent error estimate at random indices
+        # independent error estimate at random indices, accumulated over the sweeps
         ind = self.rng.integers(0, self.tensor.shape, size=(n_test, self.tensor.ndim))
         vals = eval_f(ind).to(dtype=self.tensor.dtype, device=self.tensor.device)
         self.n_eval += n_test
-        self.test_err = float(RMS(self.tensor.entries(ind) - vals) / RMS(vals))
+        self.test_indices = np.concatenate((self.test_indices, ind))
+        self.test_values = torch.cat((self.test_values, vals))
+        with torch.no_grad():
+          approx = self.tensor.entries(self.test_indices)
+        self.test_err = float(RMS(approx - self.test_values) / RMS(self.test_values))
 
       if verbose > 0:
         print(

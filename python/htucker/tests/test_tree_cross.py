@@ -253,3 +253,28 @@ def test_random_kick_exact_recovery(backend, tree_type):
   # every selection is interpolatory, so random rows do not break exactness
   for ind in eval_f.calls:
     assert np.all(ind >= 0) and np.all(ind < np.array(x.shape))
+
+def test_n_test_accumulates(backend):
+  cross, x, X, eval_f = setup_cross(backend, 'balanced')
+  cross.run(eval_f, n_iter=3, eps=0., n_test=20)
+  assert cross.test_indices.shape == (60, x.ndim)
+  assert len(cross.test_values) == 60
+  # every sweep evaluates eval_f only at its 20 new test points
+  for k in range(3):
+    block = cross.test_indices[20 * k:20 * (k + 1)]
+    assert sum(np.array_equal(ind, block) for ind in eval_f.calls) == 1
+  assert cross.n_eval == sum(ind.shape[0] for ind in eval_f.calls)
+  # test_err is measured at all accumulated points with the final tensor
+  values = np.asarray(cross.test_values)
+  expected = np.linalg.norm(np.asarray(x.entries(cross.test_indices)) - values) / np.linalg.norm(values)
+  assert cross.test_err == pytest.approx(expected, rel=1e-10)
+
+def test_n_test_reset_per_run(backend):
+  cross, x, X, eval_f = setup_cross(backend, 'balanced')
+  cross.run(eval_f, n_iter=2, eps=0., n_test=20)
+  assert cross.test_indices.shape[0] == 40
+  cross.run(eval_f, n_iter=1, eps=0., n_test=20, force_init=False)
+  assert cross.test_indices.shape[0] == 20
+  # without n_test there is no estimate
+  cross.run(eval_f, n_iter=1, eps=0., force_init=False)
+  assert cross.test_err is None and cross.test_indices.shape[0] == 0
