@@ -47,11 +47,13 @@ import numpy as np
 import torch
 
 
-def _as_matrix(a):
+def _as_matrix(a, device=None):
   """
-  Torch matrix from a, floating point and finite.
+  Torch matrix from a on device (unchanged if None), floating point and finite.
   """
   a = torch.as_tensor(a)
+  if device is not None:
+    a = a.to(device)
   if a.ndim != 2:
     raise ValueError(f'maxvol expects a 2d matrix, got shape {tuple(a.shape)}')
   if not (a.is_floating_point() or a.is_complex()):
@@ -103,7 +105,10 @@ def _maxvol(A, tol, max_iters, rcond=None):
   return piv, C, float(C.abs().max()) <= tol
 
 
-def maxvol(a, tol=1.05, max_iters=100, rcond=None, warn_nonconvergence=True):
+# maxvol is not differentiable, and torch would otherwise record the in-place
+# updates for an input that requires grad
+@torch.no_grad()
+def maxvol(a, tol=1.05, max_iters=100, rcond=None, warn_nonconvergence=True, device='cpu'):
   """
   Square maximum-volume submatrix: r rows of locally maximal |det|.
 
@@ -119,6 +124,10 @@ def maxvol(a, tol=1.05, max_iters=100, rcond=None, warn_nonconvergence=True):
     Relative threshold on the LU diagonal for the rank test. Default r * eps.
   warn_nonconvergence: bool, optional
     Warn if max_iters is reached with max |C| > tol.
+  device: torch.device or str, optional
+    Device the computation runs on. Default is the cpu, since the matrices are
+    small and every greedy step synchronizes with the host. None uses the device
+    of a.
 
   Returns
   -------
@@ -127,10 +136,11 @@ def maxvol(a, tol=1.05, max_iters=100, rcond=None, warn_nonconvergence=True):
   C: torch.tensor
     (N, r) matrix on the device of a with a = C a[piv] and C[piv] = I.
   """
-  A = _as_matrix(a)
+  out_device = torch.as_tensor(a).device
+  A = _as_matrix(a, device)
   n, r = A.shape
   if n <= r:
-    return np.arange(n), torch.eye(n, dtype=A.dtype, device=A.device)
+    return np.arange(n), torch.eye(n, dtype=A.dtype, device=out_device)
   tol = float(tol)
   if not tol > 0.:
     raise ValueError(f'maxvol tol must be positive, got {tol}')
@@ -142,11 +152,12 @@ def maxvol(a, tol=1.05, max_iters=100, rcond=None, warn_nonconvergence=True):
     warnings.warn(
       f'maxvol did not converge after {max_iters} swaps. The factorisation a = C a[piv] '
       'still holds, the submatrix is just not dominant.', RuntimeWarning, stacklevel=2)
-  return piv.cpu().numpy(), C
+  return piv.cpu().numpy(), C.to(out_device)
 
 
+@torch.no_grad()
 def rect_maxvol(a, tol=1.05, maxK=None, min_add_K=None, minK=None,
-                start_maxvol_iters=10, rcond=None, warn_budget=True):
+                start_maxvol_iters=10, rcond=None, warn_budget=True, device='cpu'):
   """
   Rectangular maximum-volume submatrix: K >= r rows with small ||C[i]||_2.
 
@@ -172,6 +183,10 @@ def rect_maxvol(a, tol=1.05, maxK=None, min_add_K=None, minK=None,
     Relative threshold for the rank test of the square phase.
   warn_budget: bool, optional
     Warn if the growth stops at maxK with rows still above tol.
+  device: torch.device or str, optional
+    Device the computation runs on. Default is the cpu, since the matrices are
+    small and every greedy step synchronizes with the host. None uses the device
+    of a.
 
   Returns
   -------
@@ -180,11 +195,12 @@ def rect_maxvol(a, tol=1.05, maxK=None, min_add_K=None, minK=None,
   C: torch.tensor
     (N, K) matrix on the device of a with a = C a[piv] and C[piv] = I.
   """
-  A = _as_matrix(a)
+  out_device = torch.as_tensor(a).device
+  A = _as_matrix(a, device)
   n, r = A.shape
   dtype, device = A.dtype, A.device
   if n <= r:
-    return np.arange(n), torch.eye(n, dtype=dtype, device=device)
+    return np.arange(n), torch.eye(n, dtype=dtype, device=out_device)
   tol = float(tol)
   if not tol > 0.:
     raise ValueError(f'rect_maxvol tol must be positive, got {tol}')
@@ -248,4 +264,4 @@ def rect_maxvol(a, tol=1.05, maxK=None, min_add_K=None, minK=None,
       f'rect_maxvol: tol = {tol:.3g} < 1 cannot hold for the selected rows, which have norm 1',
       RuntimeWarning, stacklevel=2)
 
-  return piv.cpu().numpy(), C
+  return piv.cpu().numpy(), C.to(out_device)

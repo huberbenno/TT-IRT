@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 import torch
@@ -72,6 +74,44 @@ def test_non_finite():
   a[3, 1] = float('nan')
   with pytest.raises(ValueError):
     rect_maxvol(a)
+
+@pytest.mark.parametrize('fn', [maxvol, rect_maxvol])
+def test_no_autograd(fn):
+  a = orthonormal(60, 10, seed=7).requires_grad_(True)
+  with warnings.catch_warnings():
+    warnings.simplefilter('error')
+    piv, C = fn(a)
+  assert not C.requires_grad and C.grad_fn is None
+  assert torch.allclose(C @ a.detach()[piv], a.detach(), atol=1e-12)
+
+@pytest.mark.parametrize('fn', [maxvol, rect_maxvol])
+def test_device_none_matches_cpu(fn):
+  a = orthonormal(200, 10, seed=8)
+  piv_cpu, C_cpu = fn(a, device='cpu')
+  piv_none, C_none = fn(a, device=None)
+  assert np.array_equal(piv_cpu, piv_none)
+  assert torch.equal(C_cpu, C_none)
+  assert C_cpu.device == C_none.device == a.device
+
+@pytest.mark.parametrize('fn', [maxvol, rect_maxvol])
+def test_few_rows_device(fn):
+  a = orthonormal(4, 4, seed=9)
+  piv, C = fn(a, device=None)
+  assert C.device == a.device and torch.equal(C, torch.eye(4, dtype=a.dtype))
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='needs a CUDA device')
+@pytest.mark.parametrize('fn', [maxvol, rect_maxvol])
+def test_device_roundtrip(fn):
+  a = orthonormal(200, 10, seed=10)
+  piv_ref, C_ref = fn(a)
+  # cuda input, computed on the cpu (default), returned on cuda
+  piv, C = fn(a.cuda())
+  assert C.device.type == 'cuda'
+  assert np.array_equal(piv, piv_ref) and torch.allclose(C.cpu(), C_ref)
+  # cpu input, computed on cuda, returned on the cpu
+  piv, C = fn(a, device='cuda')
+  assert C.device.type == 'cpu'
+  assert np.array_equal(piv, piv_ref) and torch.allclose(C, C_ref, atol=1e-12)
 
 def test_budget_warning():
   a = orthonormal(500, 10, seed=6)
