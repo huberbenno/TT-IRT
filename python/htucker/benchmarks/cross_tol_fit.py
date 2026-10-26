@@ -2,7 +2,7 @@ import numpy as np
 from dataclasses import dataclass
 import json
 from dataclasses import asdict
-from benchmarks.util import NumpyEncoder
+from benchmarks.util import NumpyEncoder, coeff_mc_errors
 
 from pde.coeff_function import coeff
 
@@ -104,13 +104,7 @@ def cross_tol_fit(args: ARGS_cross_tol_fit):
     C_a_rounded = TreeBasedTensor(C_a).round(eps)
     stats['coeff_size'] = C_a_rounded.sparse_size
     # coeff TT error estimate
-    errs = np.zeros(args.N_mc)
-    for i in range(args.N_mc):
-      y = rng.integers(0, param_shape) # random index in param space
-      C_eval = torch.ravel(C_a_rounded [:, *y]) # eval in full physical space
-      X = np.hstack([np.arange(args.Nx).reshape((-1,1)), np.tile(y, [args.Nx,1])])
-      C_true = cfun(X)
-      errs[i] = RMS((C_eval-C_true).numpy(force=True))
+    errs = coeff_mc_errors(C_a_rounded, cfun, rng, args.N_mc)
 
     stats['coeff_error'] += [errs]
     if args.verbose:  print(f'Coefficient TT RMS l2 err = {RMS(errs):.2e}')

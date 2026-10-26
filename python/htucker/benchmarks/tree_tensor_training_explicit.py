@@ -2,7 +2,7 @@ import numpy as np
 from dataclasses import dataclass
 import json
 from dataclasses import asdict
-from benchmarks.util import NumpyEncoder, RMS
+from benchmarks.util import NumpyEncoder, RMS, coeff_mc_errors
 
 from pde.coeff_function import coeff
 
@@ -315,13 +315,7 @@ def tree_tensor_training_explicit(args: ARGS_tree_tensor_training_explicit, retu
         break
 
     # coeff TT error estimate
-    errs = np.zeros(args.N_mc)
-    for i in range(args.N_mc):
-      y = rng.integers(0, tensor_shape[1:]) # random index in param space
-      C_eval = torch.ravel(model.tensor[:, *y]) # eval in full physical space
-      X = np.hstack([np.arange(args.Nx).reshape((-1,1)), np.tile(y, [args.Nx,1])])
-      C_true = cfun(X).to(device=args.device)
-      errs[i] = RMS((C_eval-C_true).numpy(force=True))
+    errs = coeff_mc_errors(model.tensor, cfun, rng, args.N_mc)
 
   stats['MC_errors'] = errs
   if args.verbose:  print(f'Coefficient TT RMS l2 err = {RMS(errs):.2e}')
