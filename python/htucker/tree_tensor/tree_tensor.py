@@ -49,22 +49,43 @@ def svd_cut(A, tol, alpha=0., norm=2):
 
 
 class TreeBasedTensor:
-  def __init__(self, cores, tree: Tree = None):
+  def __init__(self, cores, tree: Tree = None, dtype=None):
+    """
+    Copy of a TreeBasedTensor (tree is None), or tensor from a list of cores and a tree.
+    Each core may be a numpy array or a nested list, whose dtype is inferred by numpy.
+
+    The cores are always copied. They are converted to dtype if specified, otherwise
+    the dtype is inherited and all cores must share the same dtype.
+    """
     if (tree is None) and isinstance(cores, TreeBasedTensor):
       # Create a copy
       self.tree = copy.deepcopy(cores.tree)
-      self.cores = copy.deepcopy(cores.cores)
-      self.shape = cores.shape
+      shape = cores.shape
+      cores = cores.cores
     elif isinstance(cores, (list, np.ndarray)) and isinstance(
         tree, Tree):
       assert tree.n_nodes == len(cores), f'Number of tree nodes must match number of cores ({tree.n_nodes} != {len(cores)}).'
       self.tree = copy.deepcopy(tree)
-      self.cores = NodeIndexedList([np.array(x) for x in cores])
-      self.shape = tuple(cores[tree.dim2id(i)].shape[0] for i in range(tree.order))
+      cores = [np.asarray(x) for x in cores]
+      shape = tuple(cores[tree.dim2id(i)].shape[0] for i in range(tree.order))
     else:
       raise NotImplementedError(
         "Constructor not implemented for the " "provided arguments."
       )
+
+    if dtype is None:
+      dtype = cores[0].dtype
+      if any(x.dtype != dtype for x in cores):
+        raise ValueError(f'Cores must share the same dtype, got {sorted({str(x.dtype) for x in cores})}.')
+    self.cores = NodeIndexedList([np.array(x, dtype=dtype) for x in cores])
+    self.shape = shape
+
+  @property
+  def dtype(self):
+    """
+    Data type of the tensor. All cores share the same dtype.
+    """
+    return self.cores[0].dtype
 
   @property
   def ndim(self):
@@ -122,7 +143,7 @@ class TreeBasedTensor:
     return self[slices]
 
   @staticmethod
-  def randn(tree: Tree, shape, rank: int, seed=None, scale: float = 1.) -> TreeBasedTensor:
+  def randn(tree: Tree, shape, rank: int, seed=None, dtype=np.float64, scale: float = 1.) -> TreeBasedTensor:
     """
     Build a tensor with normally distributed cores.
 
@@ -139,6 +160,9 @@ class TreeBasedTensor:
       Uniform rank for initialization.
     seed: int, optional
       Seed for the rng. Default uses system entropy.
+    dtype: numpy dtype, optional
+      Data type of the cores. The cores are drawn in float64 and converted, so the
+      same seed gives the same tensor up to precision. Default is float64.
     scale: float, optional
       Standard deviation of the tensor entries. Default is 1.
     """
@@ -156,10 +180,10 @@ class TreeBasedTensor:
       else:
         cores += [1. / np.sqrt(fan_in) * rng.standard_normal(node.n_children * (rank,) + (rank,))]
 
-    return TreeBasedTensor(cores, tree)
+    return TreeBasedTensor(cores, tree, dtype=dtype)
 
   @staticmethod
-  def ones(tree: Tree, shape) -> TreeBasedTensor:
+  def ones(tree: Tree, shape, dtype=np.float64) -> TreeBasedTensor:
     """
     Build a tensor (of rank 1) filled with ones .
 
@@ -169,6 +193,8 @@ class TreeBasedTensor:
       Object defining the dimension tree strucure.
     shape: tuple(int, ...)
       Shape of the tensor.
+    dtype: numpy dtype, optional
+      Data type of the cores. Default is float64.
     """
     assert tree.order == len(shape), \
     f'Tree order must match shape ({tree.order} != {len(shape)}).'
@@ -182,7 +208,7 @@ class TreeBasedTensor:
       else:
         cores += [np.ones(node.n_children * (1,) + (1,))]
 
-    return TreeBasedTensor(cores, tree)
+    return TreeBasedTensor(cores, tree, dtype=dtype)
 
   def copy(self):
     return TreeBasedTensor(self)

@@ -65,11 +65,12 @@ def _kron_core(core1, core2):
 class TreeBasedTensor:
   def __init__(self, cores, tree: Tree = None, dtype=None, device=None):
     """
-    Copy of a TreeBasedTensor (tree is None), or tensor from a list of torch or
-    numpy cores and a tree. 
-    
-    The cores are always copied, while dtype and device are inherited unless 
-    specified.
+    Copy of a TreeBasedTensor (tree is None), or tensor from a list of cores and a
+    tree. Each core may be a torch tensor, a numpy array or a nested list. The dtype
+    of numpy arrays and nested lists is inferred as by numpy (float64 for floats).
+
+    The cores are always copied. They are converted to dtype and device if specified,
+    otherwise these are inherited and all cores must share the same dtype and device.
     """
     if (tree is None) and isinstance(cores, TreeBasedTensor):
       # Create a copy
@@ -81,7 +82,8 @@ class TreeBasedTensor:
         tree, Tree):
       assert tree.n_nodes == len(cores), f'Number of tree nodes must match number of cores ({tree.n_nodes} != {len(cores)}).'
       self.tree = copy.deepcopy(tree)
-      cores = [torch.from_numpy(x) if isinstance(x, np.ndarray) else x for x in cores]
+      # numpy arrays and nested lists go through numpy, so both backends infer the same dtype
+      cores = [x if isinstance(x, torch.Tensor) else torch.from_numpy(np.asarray(x)) for x in cores]
       shape = tuple(cores[tree.dim2id(i)].shape[0] for i in range(tree.order))
 
     else:
@@ -89,8 +91,16 @@ class TreeBasedTensor:
         "Constructor not implemented for the " "provided arguments."
       )
 
-    self.dtype = cores[0].dtype if dtype is None else dtype
-    self.device = cores[0].device if device is None else torch.device(device)
+    if dtype is None:
+      dtype = cores[0].dtype
+      if any(x.dtype != dtype for x in cores):
+        raise ValueError(f'Cores must share the same dtype, got {sorted({str(x.dtype) for x in cores})}.')
+    self.dtype = dtype
+    if device is None:
+      device = cores[0].device
+      if any(x.device != device for x in cores):
+        raise ValueError(f'Cores must share the same device, got {sorted({str(x.device) for x in cores})}.')
+    self.device = torch.device(device)
     self.cores = NodeIndexedList([x.detach().clone().to(device=self.device, dtype=self.dtype) for x in cores])
     self.shape = shape
 
