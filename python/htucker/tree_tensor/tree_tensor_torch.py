@@ -2,7 +2,7 @@ from tree.tree import Tree, TreeNode, NodeIndexedList
 import numpy as np
 import copy
 import torch
-from tt.maxvol import rect_maxvol
+from util.maxvol_torch import rect_maxvol
 from tt import set_backend as tt_set_backend
 tt_set_backend('torch')
 

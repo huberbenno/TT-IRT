@@ -4,7 +4,7 @@ import torch
 from typing import Callable
 from tree_tensor.tree_tensor_torch import TreeBasedTensor, svd_cut_torch
 from tree.tree import TreeNode
-from tt.maxvol import rect_maxvol
+from util.maxvol_torch import rect_maxvol
 from tt import set_backend as tt_set_backend
 tt_set_backend('torch')
 
