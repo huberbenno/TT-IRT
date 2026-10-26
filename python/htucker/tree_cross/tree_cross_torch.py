@@ -12,22 +12,34 @@ def RMS(x, **kwargs):
   return torch.sqrt(torch.mean(torch.square(x), **kwargs))
 
 class TreeCross:
-  def __init__(self, tensor: TreeBasedTensor):
+  def __init__(self, tensor: TreeBasedTensor, seed=None):
+    """
+    Parameters
+    ----------
+    tensor: TreeBasedTensor
+      Initial guess, updated in place by run.
+    seed: int, optional
+      Seed for the random index enrichment (random_kick) and the random test
+      points (n_test) of run.
+    """
     self.tensor = tensor
     self.indexset_list = None
     self.indexset_dims_list = None
     self.n_eval = 0
+    self.test_err = None
+    self.rng = np.random.default_rng(seed)
 
   def run(
-      self, 
-      eval_f: Callable[[np.array]], 
-      n_iter: int=1, 
-      eps: float=0., 
-      kickrank: int=2, 
-      rf=2, 
+      self,
+      eval_f: Callable[[np.array]],
+      n_iter: int=1,
+      eps: float=0.,
+      kickrank: int=2,
       force_init: bool=True,
       resample: bool=False,
-      verbose: bool|int=False
+      verbose: bool|int=False,
+      random_kick: int=0,
+      n_test: int=0,
       ) -> None:
     """
     Run the cross approximation.
@@ -42,15 +54,21 @@ class TreeCross:
     eps: float, optional
       Tolerance for rank truncation. Default is 0 (no truncation).
     kickrank: int, optional
-      Number of ranks to add in each step.
-    rf: int, optional
-      Tuning parameter.
+      Number of ranks to add in each step, chosen greedily by maxvol.
     force_init: bool, optional
-      Force indexset reinitialization. 
+      Force indexset reinitialization.
     resample: bool, optional
       Resample interior nodes after subtree recursion.
     verbose: bool or int, optional
       Print diagnostics if True.
+    random_kick: int, optional
+      Number of randomly drawn rows added to every index selection on top of the
+      maxvol rows. Default is 0.
+    n_test: int, optional
+      If positive, the target is evaluated at n_test random indices after every
+      sweep (counted in n_eval). The relative RMS error there is stored in
+      test_err, and the sweeps only stop early once it is also below eps.
+      Default is 0.
     """
     if self.indexset_list is None or force_init:
       self._init()
@@ -78,7 +96,7 @@ class TreeCross:
 
         u,s,v = svd_cut_torch(eval, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
         r = torch.diag(s) @ v
-        ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank, warn_budget=False)
+        ind, C = self._select_rows(u, kickrank, random_kick)
         C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
         qmax = u[ind]
         self.tensor.cores[node] = C
@@ -112,7 +130,7 @@ class TreeCross:
           u,s,v = svd_cut_torch(core, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
           # u,s,v = np.linalg.svd(core, full_matrices=False)
           r = torch.diag(s) @ v
-          ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank, warn_budget=False)
+          ind, C = self._select_rows(u, kickrank, random_kick)
           C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
           qmax = u[ind]
           core = C
@@ -159,7 +177,7 @@ class TreeCross:
           # print(f'{s[0]/s[-1]:.2e}')
           # u,s,v = np.linalg.svd(core, full_matrices=False)
           r = torch.diag(s) @ v
-          ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank + rf, min_add_K=kickrank, warn_budget=False)
+          ind, C = self._select_rows(u, kickrank, random_kick)
           C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
           qmax = u[ind]
 
@@ -201,14 +219,38 @@ class TreeCross:
       self.max_dx = 0
       worker(self.tensor.tree.root, np.zeros((1,0), dtype=int), [])
 
+      if n_test > 0:
+        # independent error estimate at random indices
+        ind = self.rng.integers(0, self.tensor.shape, size=(n_test, self.tensor.ndim))
+        vals = eval_f(ind).to(dtype=self.tensor.dtype, device=self.tensor.device)
+        self.n_eval += n_test
+        self.test_err = float(RMS(self.tensor.entries(ind) - vals) / RMS(vals))
+
       if verbose > 0:
         print(
           f'swp: {str(iteration+1).rjust(len(str(n_iter)))}/{n_iter}',
           f'f_evals={self.n_eval}',
-          f'self.max_dx={self.max_dx:.2e}'
+          f'self.max_dx={self.max_dx:.2e}',
+          *([f'test_err={self.test_err:.2e}'] if n_test > 0 else [])
           )
-      if self.max_dx < eps:
+      if self.max_dx < eps and (n_test == 0 or self.test_err < eps):
         break
+
+  def _select_rows(self, u, kickrank, random_kick):
+    """
+    Rows ind of the orthonormal u and C with u = C u[ind]: the maxvol rows plus
+    random_kick randomly drawn ones.
+    """
+    ind, C = rect_maxvol(u, tol=1.1, maxK=u.shape[1] + kickrank, min_add_K=kickrank, warn_budget=False)
+    if random_kick > 0:
+      rest = np.setdiff1d(np.arange(u.shape[0]), ind)
+      if len(rest) > 0:
+        # maxvol only picks rows where the current basis is large, random rows keep
+        # exploring the others
+        ind = np.concatenate((ind, self.rng.choice(rest, size=min(random_kick, len(rest)), replace=False)))
+        C = u @ torch.linalg.pinv(u[ind])
+        C[ind] = torch.eye(len(ind), dtype=C.dtype, device=C.device)
+    return ind, C
 
   def _init(self):
     _, self.indexset_list, self.indexset_dims_list, _ = self.tensor._orth_subtree_maxvol(self.tensor.tree.root)

@@ -160,6 +160,34 @@ class TreeBasedTensor:
     slices = [slice(None) for _ in range(self.ndim)]
     return self[slices]
 
+  def entries(self, indices) -> torch.tensor:
+    """
+    Entries of the tensor at a batch of multi-indices.
+
+    Parameters
+    ----------
+    indices: array_like
+      (N, ndim) integer array, each row is one multi-index.
+
+    Returns
+    -------
+    values: torch.tensor
+      (N,) entries at the multi-indices.
+    """
+    indices = torch.as_tensor(np.asarray(indices), device=self.device)
+
+    def worker(node):
+      if node.isleaf:
+        return self.cores[node][indices[:, node.dim]]
+      # contract the rank axis of every child, keeping the batch axis 0
+      k = node.n_children
+      operands = []
+      for i, child in enumerate(node.children):
+        operands += [worker(child), [0, i + 1]]
+      return torch.einsum(*operands, self.cores[node], list(range(1, k + 2)), [0, k + 1])
+
+    return worker(self.tree.root)[:, 0]
+
   @staticmethod
   def randn(tree: Tree, shape, rank: int, seed=None, dtype=torch.float64, device=None, scale: float = 1.) -> TreeBasedTensor:
     """

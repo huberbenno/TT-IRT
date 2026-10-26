@@ -269,6 +269,17 @@ def test_keeps_dtype(backend, tree_type):
     assert_dense(res, expected, rtol=1e-5, atol=1e-5)
 
 
+# ---------- entries ----------
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_entries(backend, tree_type):
+  x = make_random(backend, Tree.from_tupletree(TREES[tree_type]), RX, seed=0)
+  I = np.random.default_rng(1).integers(0, x.shape, size=(50, x.ndim))
+  res = x.entries(I)
+  assert tuple(res.shape) == (50,)
+  assert np.allclose(np.asarray(res), x.numpy()[tuple(I.T)], rtol=1e-12, atol=1e-12)
+
+
 # ---------- orthogonalization ----------
 
 # the mode sizes in SIZES include 2, so ranks 3 and 10 exceed what some edges support

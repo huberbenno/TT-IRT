@@ -179,3 +179,77 @@ def test_keeps_dtype(backend, tree_type):
   assert x.dtype == backend.float32
   assert all(core.dtype == backend.float32 for core in x.cores)
   assert rel_err(x, X) < 1e-4
+
+
+# ---------- false convergence ----------
+
+# Scenario from tree_tensor_training.ipynb. For fixed x0 the coefficient is a product
+# over the parameters, so blocks sampled at rows with few distinct x0 are exactly low
+# rank. With kickrank=0 the index sets freeze on such rows, and max_dx, measured only
+# at the sampled indices, reports convergence despite a large error.
+@pytest.fixture(scope='module')
+def coeff_target():
+  from tree.tree_util import zero_root_tupletree
+  from pde.coeff_function import coeff
+  shape = (10,) + (5,) * 5
+  cf = coeff(10, 5, 1., 4., 2.)
+  grid = np.stack(np.meshgrid(*[np.arange(n) for n in shape], indexing='ij'), -1).reshape(-1, len(shape))
+  return Tree.from_tupletree(zero_root_tupletree(5, 'balanced')), shape, cf, cf(grid).reshape(shape)
+
+def setup_coeff(backend, coeff_target, seed=0):
+  tree, shape, cf, X = coeff_target
+  x = backend.randn(tree, shape, 10, seed=seed)
+  return backend.TC(x, seed=seed), x, X, Recorder(cf, backend)
+
+def test_kickrank0_false_convergence(backend, coeff_target, capsys):
+  cross, x, X, eval_f = setup_coeff(backend, coeff_target)
+  cross.run(eval_f, n_iter=10, eps=1e-4, kickrank=0, verbose=1)
+  assert n_sweeps(capsys) < 10
+  assert cross.max_dx < 1e-4
+  assert rel_err(x, X) > 1e-2
+
+def test_n_test_detects_false_convergence(backend, coeff_target, capsys):
+  cross, x, X, eval_f = setup_coeff(backend, coeff_target)
+  cross.run(eval_f, n_iter=10, eps=1e-4, kickrank=0, verbose=1, n_test=200)
+  out = capsys.readouterr().out
+  assert out.count('swp:') == 10
+  assert 'test_err=' in out
+  assert cross.test_err > 1e-2
+  # the test error is an estimate of the actual error
+  assert cross.test_err == pytest.approx(rel_err(x, X), rel=0.5)
+  # the test points are counted, and are evaluated with eval_f
+  assert cross.n_eval == sum(ind.shape[0] for ind in eval_f.calls)
+  assert sum(ind.shape[0] == 200 for ind in eval_f.calls) >= 10
+
+def test_random_kick_recovers(backend, coeff_target):
+  cross, x, X, eval_f = setup_coeff(backend, coeff_target)
+  cross.run(eval_f, n_iter=15, eps=1e-4, kickrank=0, random_kick=1)
+  assert rel_err(x, X) < 1e-5
+
+def test_n_test_converged(backend, coeff_target, capsys):
+  cross, x, X, eval_f = setup_coeff(backend, coeff_target)
+  cross.run(eval_f, n_iter=15, eps=1e-4, kickrank=2, n_test=200, verbose=1)
+  assert n_sweeps(capsys) < 15
+  assert cross.test_err < 1e-4
+  assert rel_err(x, X) < 1e-4
+
+def test_random_kick_seeded(backend):
+  def run(seed):
+    cross, x, X, eval_f = setup_cross(backend, 'nary')
+    cross.rng = np.random.default_rng(seed)
+    cross.run(eval_f, n_iter=3, kickrank=0, random_kick=2, n_test=20)
+    return x, cross
+  (x1, c1), (x2, c2), (x3, c3) = run(0), run(0), run(1)
+  assert c1.n_eval == c2.n_eval and c1.test_err == c2.test_err
+  assert all(np.array_equal(np.asarray(a), np.asarray(b)) for a, b in zip(x1.cores, x2.cores))
+  assert not all(np.asarray(a).shape == np.asarray(b).shape and np.array_equal(np.asarray(a), np.asarray(b))
+                 for a, b in zip(x1.cores, x3.cores))
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_random_kick_exact_recovery(backend, tree_type):
+  cross, x, X, eval_f = setup_cross(backend, tree_type)
+  cross.run(eval_f, n_iter=N_ITER, random_kick=2)
+  assert rel_err(x, X) < 1e-10
+  # every selection is interpolatory, so random rows do not break exactness
+  for ind in eval_f.calls:
+    assert np.all(ind >= 0) and np.all(ind < np.array(x.shape))
