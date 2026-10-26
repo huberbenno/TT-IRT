@@ -63,6 +63,7 @@ class TreeCross:
           (np.tile(indexset_p, (n,1)), np.repeat(np.arange(n), r).reshape(-1,1))
         )
         eval = eval_f(indexset[:, order])
+        eval = np.asarray(eval, dtype=self.tensor.dtype)
         self.n_eval += eval.shape[0]
         eval = eval.reshape(n, r)
 
@@ -85,6 +86,7 @@ class TreeCross:
           # sample core at indexset
           indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
           eval = eval_f(indexset)
+          eval = np.asarray(eval, dtype=self.tensor.dtype)
           self.n_eval += eval.shape[0]
           core = eval.reshape(self.tensor.cores[node].shape)
 
@@ -135,6 +137,7 @@ class TreeCross:
           #sample core at indexset
           indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
           eval = eval_f(indexset)
+          eval = np.asarray(eval, dtype=self.tensor.dtype)
           self.n_eval += eval.shape[0]
           core = eval.reshape(self.tensor.cores[node].shape)
 
@@ -169,10 +172,27 @@ class TreeCross:
 
           return qmax @ r
 
+        elif not resample and node.n_children > 2:
+          # The root is never sampled on the way up. For more than two children, the
+          # interpolation from the children's factors keeps a stale basis and the cross
+          # stagnates, so sample the root core at the final index sets.
+          indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
+          eval = eval_f(indexset)
+          eval = np.asarray(eval, dtype=self.tensor.dtype)
+          self.n_eval += eval.shape[0]
+          core = eval.reshape(self.tensor.cores[node].shape)
+
+          # compute local residual
+          res = RMS(core - self.tensor.cores[node])
+          self.max_dx = max(res, self.max_dx)
+          if verbose > 1: print(f'node {node.id}, res = {res:.2e}')
+
+          self.tensor.cores[node] = core
+
     
     for iteration in range(n_iter):
       self.max_dx = 0
-      worker(self.tensor.tree.root, np.zeros((1,0)), [])
+      worker(self.tensor.tree.root, np.zeros((1,0), dtype=int), [])
 
       if verbose > 0:
         print(
