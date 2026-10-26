@@ -311,3 +311,50 @@ def test_keeps_device(tree_type, op):
   res = x * y if op == 'mul' else x + y
   assert res.device == torch.device('meta')
   assert all(core.device == torch.device('meta') for core in res.cores)
+
+
+# ---------- random init ----------
+
+# one shuffled ordering per non random tree type: the distribution of the entries
+# does not depend on the ordering, and sampling is expensive
+RANDN_TREES = [f"{name}-{''.join(map(str, orderings(n)[2]))}" for name, (n, _) in BUILDERS.items()] \
+  + ['random', 'nary']
+N_SAMPLES = 2000
+
+def sample_entries(backend, tupletree, rank, scale, n_samples=N_SAMPLES, n_entries=3):
+  """
+  Draw n_samples independent tensors and evaluate each at n_entries fixed indices.
+  Returns array of shape (n_samples, n_entries).
+  """
+  tree = Tree.from_tupletree(tupletree)
+  shape = (6,) + tuple(range(2, 2 + tree.order - 1))
+  rng = np.random.default_rng(0)
+  entries = [tuple(int(i) for i in rng.integers(0, shape)) for _ in range(n_entries)]
+  vals = np.zeros((n_samples, n_entries))
+  for s in range(n_samples):
+    T = backend.TT.randn(tree, shape, rank, seed=s, scale=scale)
+    for j, idx in enumerate(entries):
+      vals[s, j] = float(T[idx])
+  return vals
+
+@pytest.mark.parametrize('tree_type', RANDN_TREES)
+@pytest.mark.parametrize('rank', [2, 10])
+@pytest.mark.parametrize('scale', [1., 3.])
+def test_randn_entries_centered(backend, tree_type, rank, scale):
+  vals = sample_entries(backend, TREES[tree_type], rank, scale)
+  # standard error of the mean is scale / sqrt(N), allow 4 sigma
+  tol = 4 * scale / np.sqrt(N_SAMPLES)
+  assert np.all(np.abs(vals.mean(axis=0)) < tol), f'means {vals.mean(axis=0)} exceed {tol:.3f}'
+
+@pytest.mark.parametrize('tree_type', RANDN_TREES)
+@pytest.mark.parametrize('scale', [1., 3.])
+def test_randn_entries_variance(backend, tree_type, scale):
+  # large rank only: for small ranks the entries are heavy-tailed and the sample
+  # variance converges too slowly for a reliable test
+  vals = sample_entries(backend, TREES[tree_type], 10, scale)
+  rel_var = vals.var(axis=0) / scale**2
+  # entries are heavy-tailed (products of normals), so the relative standard error
+  # of the sample variance is sqrt((kurtosis - 1) / N) rather than sqrt(2 / N)
+  kurt = np.mean(vals**4, axis=0) / np.mean(vals**2, axis=0)**2
+  tol = 4 * np.sqrt((kurt - 1) / N_SAMPLES)
+  assert np.all(np.abs(rel_var - 1) < tol), f'relative variances {rel_var}, tolerances {tol}'
