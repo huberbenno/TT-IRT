@@ -1,6 +1,8 @@
+import os
 import json
 import numpy as np
 import torch
+from dataclasses import asdict
 
 class NumpyEncoder(json.JSONEncoder):
   def default(self, obj):
@@ -9,6 +11,15 @@ class NumpyEncoder(json.JSONEncoder):
     if np.issubdtype(obj, np.integer):
       return int(obj)
     return super().default(obj)
+
+def save_stats(args, stats, subdir, prefix='stats'):
+  """ Save args and stats to data/<subdir>/<prefix>_<hash of args>.json, the path is also stored in stats['file']. """
+  fn = f'data/{subdir}/{prefix}_{hash(args):X}.json'
+  os.makedirs(os.path.dirname(fn), exist_ok=True)
+  stats['file'] = fn
+  with open(fn, mode='w') as file:
+    json.dump({'args': asdict(args), 'stats':stats}, file, cls=NumpyEncoder)
+  return fn
 
 def RMS(x, **kwargs):
   return np.sqrt(np.mean(np.square(x), **kwargs))

@@ -1,8 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-import json
-from dataclasses import asdict
-from benchmarks.util import NumpyEncoder, coeff_mc_errors
+from benchmarks.util import save_stats, coeff_mc_errors
 
 from pde.coeff_function import coeff
 from pde.diffusion_1d import Diffusion1D_torch as Diffusion1D
@@ -136,12 +134,7 @@ def alsc_accuracy_scaling(args : ARGS_alsc_accuracy_scaling):
     stats['error'] += [errs]
     stats['error_coeff'] += [errs_coeff]
 
-  fn = f'data/stats_{hash(args):X}.json'
-  stats['file'] = fn
-  with open(fn, mode='w') as file:
-    json.dump({'args': asdict(args), 'stats':stats}, file, cls=NumpyEncoder)
-
-  if args.verbose: print(f'\nSaved stats to: {fn}')
+  fn = save_stats(args, stats, 'alsc_accuracy_scaling')
 
   if args.verbose: print(f'\nSaved stats to: {fn}')
 

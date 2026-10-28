@@ -1,8 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-import json
-from dataclasses import asdict
-from benchmarks.util import NumpyEncoder, coeff_mc_errors
+from benchmarks.util import save_stats, coeff_mc_errors
 
 from pde.coeff_function import coeff
 
@@ -109,10 +107,7 @@ def cross_tol_fit(args: ARGS_cross_tol_fit):
     stats['coeff_error'] += [errs]
     if args.verbose:  print(f'Coefficient TT RMS l2 err = {RMS(errs):.2e}')
 
-  fn = f'data/stats_{hash(args):X}.json'
-  stats['file'] = fn
-  with open(fn, mode='w') as file:
-    json.dump({'args': asdict(args), 'stats':stats}, file, cls=NumpyEncoder)
+  fn = save_stats(args, stats, 'cross_tol_fit')
 
   if args.verbose: print(f'\nSaved stats to: {fn}')
 
