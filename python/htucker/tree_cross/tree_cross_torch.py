@@ -5,8 +5,6 @@ from typing import Callable
 from tree_tensor.tree_tensor_torch import TreeBasedTensor, svd_cut_torch
 from tree.tree import TreeNode
 from util.maxvol_torch import rect_maxvol
-from tt import set_backend as tt_set_backend
-tt_set_backend('torch')
 
 def RMS(x, **kwargs):
   return torch.sqrt(torch.mean(torch.square(x), **kwargs))
@@ -31,6 +29,7 @@ class TreeCross:
     self.test_values = None
     self.rng = np.random.default_rng(seed)
 
+  @torch.no_grad()
   def run(
       self,
       eval_f: Callable[[np.array]],
@@ -71,149 +70,17 @@ class TreeCross:
       every sweep to test convergence. Default is 0.
     """
     if self.indexset_list is None or force_init:
-      self._init()
+      self._init_cross()
 
     self.max_dx = 0
     eps_extra = 1e-1
 
-    def worker(node: TreeNode, indexset_p: np.ndarray, indexset_dims_p: np.ndarray):
-      if node.isleaf:
-        n, r = self.tensor.shape[node.dim], self.tensor.cores[node].shape[-1]
-        dims = np.concatenate((indexset_dims_p, np.array([node.dim], dtype=int)))
-        order = np.argsort(dims)
-        indexset = np.hstack(
-          (np.tile(indexset_p, (n,1)), np.repeat(np.arange(n), r).reshape(-1,1))
-        )
-        eval = eval_f(indexset[:, order])
-        eval = eval.to(dtype=self.tensor.dtype, device=self.tensor.device)
-        self.n_eval += eval.shape[0]
-        eval = eval.reshape(n, r)
-
-        # compute local residual
-        res = RMS(eval - self.tensor.cores[node].reshape(n,r))
-        self.max_dx = max(res, self.max_dx)
-        if verbose > 1: print(f'node {node.id}, res = {res:.2e}')
-
-        u,s,v = svd_cut_torch(eval, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
-        r = torch.diag(s) @ v
-        ind, C = self._select_rows(u, kickrank, random_kick)
-        C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
-        qmax = u[ind]
-        self.tensor.cores[node] = C
-
-        self.indexset_list[node] = ind.reshape(-1,1)
-        return qmax @ r
-      
-      else:
-        if resample:
-          # sample core at indexset
-          indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
-          eval = eval_f(indexset)
-          eval = eval.to(dtype=self.tensor.dtype, device=self.tensor.device)
-          self.n_eval += eval.shape[0]
-          core = eval.reshape(self.tensor.cores[node].shape)
-
-          # compute local residual
-          res = RMS(core - self.tensor.cores[node])
-          self.max_dx = max(res, self.max_dx)
-          if verbose > 1: print(f'node {node.id}, res = {res:.2e}')
-
-          self.tensor.cores[node] = core
-
-        for i, child in enumerate(node.children):
-          core = self.tensor.cores[node]
-
-          # orth toward child
-          core = torch.moveaxis(core, i, -1)
-          old_shape = core.shape[:-1]
-          core = core.reshape(-1, core.shape[-1])
-          u,s,v = svd_cut_torch(core, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
-          # u,s,v = np.linalg.svd(core, full_matrices=False)
-          r = torch.diag(s) @ v
-          ind, C = self._select_rows(u, kickrank, random_kick)
-          C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
-          qmax = u[ind]
-          core = C
-          # push non orth factor to child
-          self.tensor.cores[child] = torch.tensordot(self.tensor.cores[child], qmax @ r, dims=((-1,),(-1,)))
-
-          # update index set
-          indexset_sizes = [np.arange(self.indexset_list[c].shape[0]) for c in child.siblings] + [np.arange(indexset_p.shape[0])]
-          ind_grid = np.meshgrid(*indexset_sizes, indexing='ij')
-          indexsets = [self.indexset_list[c] for c in child.siblings] + [indexset_p]
-          indexset = np.concatenate(
-            [ind[grid.flatten()] for ind, grid in zip(indexsets, ind_grid)],
-            axis = -1
-          )
-          indexset = indexset[ind]
-          indexset_dims = np.concatenate([self.indexset_dims_list[c] for c in child.siblings] + [indexset_dims_p])
-
-          # go to child
-          factor = worker(child, indexset, indexset_dims)
-          # absord non orth factor from child
-          core = core.reshape(old_shape + (-1,))
-          # TODO can skip this for last child
-          core = torch.tensordot(core, factor, dims=((-1,),(-1,)))
-          self.tensor.cores[node] = torch.moveaxis(core, -1, i)
-
-        # orth towards parent
-        if not node.isroot:
-          #sample core at indexset
-          indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
-          eval = eval_f(indexset)
-          eval = eval.to(dtype=self.tensor.dtype, device=self.tensor.device)
-          self.n_eval += eval.shape[0]
-          core = eval.reshape(self.tensor.cores[node].shape)
-
-          # compute local residual
-          res = RMS(core - self.tensor.cores[node])
-          self.max_dx = max(res, self.max_dx)
-          if verbose > 1: print(f'node {node.id}, res = {res:.2e}')
-
-          old_shape = core.shape[:-1]
-          core = core.reshape(-1, core.shape[-1])
-
-          u,s,v = svd_cut_torch(core, tol=eps_extra*eps/np.sqrt(self.tensor.ndim), norm='fro')
-          # print(f'{s[0]/s[-1]:.2e}')
-          # u,s,v = np.linalg.svd(core, full_matrices=False)
-          r = torch.diag(s) @ v
-          ind, C = self._select_rows(u, kickrank, random_kick)
-          C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
-          qmax = u[ind]
-
-          core = C.reshape(old_shape + (-1,))
-          self.tensor.cores[node] = core
-
-          # update index set towards parent
-          ind_grid = np.meshgrid(
-            *[np.arange(self.indexset_list[c].shape[0]) for c in node.children],
-            indexing='ij'
-          )
-          indexset = np.concatenate(
-            [*[self.indexset_list[c][grid.flatten()] for c, grid in zip(node.children, ind_grid)]],
-            axis = -1
-          )
-          self.indexset_list[node] = indexset[ind]
-
-          return qmax @ r
-
-        elif not resample and node.n_children > 2:
-          # The root is never sampled on the way up. For more than two children, the
-          # interpolation from the children's factors keeps a stale basis and the cross
-          # stagnates, so sample the root core at the final index sets.
-          indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
-          eval = eval_f(indexset)
-          eval = eval.to(dtype=self.tensor.dtype, device=self.tensor.device)
-          self.n_eval += eval.shape[0]
-          core = eval.reshape(self.tensor.cores[node].shape)
-
-          # compute local residual
-          res = RMS(core - self.tensor.cores[node])
-          self.max_dx = max(res, self.max_dx)
-          if verbose > 1: print(f'node {node.id}, res = {res:.2e}')
-
-          self.tensor.cores[node] = core
-
+    # settings of the sweep, eval_f is passed explicitly so that it is not kept alive
+    self._svd_tol = eps_extra*eps/np.sqrt(self.tensor.ndim)
+    self._kickrank = kickrank
+    self._random_kick = random_kick
+    self._resample = resample
+    self._verbose = verbose
 
     # test points of this run, a new eval_f may be passed in the next one
     self.test_indices = np.zeros((0, self.tensor.ndim), dtype=int)
@@ -222,7 +89,7 @@ class TreeCross:
 
     for iteration in range(n_iter):
       self.max_dx = 0
-      worker(self.tensor.tree.root, np.zeros((1,0), dtype=int), [])
+      self._sweep(self.tensor.tree.root, np.zeros((1,0), dtype=int), [], eval_f)
 
       if n_test > 0:
         # independent error estimate at random indices, accumulated over the sweeps
@@ -231,8 +98,7 @@ class TreeCross:
         self.n_eval += n_test
         self.test_indices = np.concatenate((self.test_indices, ind))
         self.test_values = torch.cat((self.test_values, vals))
-        with torch.no_grad():
-          approx = self.tensor.entries(self.test_indices)
+        approx = self.tensor.entries(self.test_indices)
         self.test_err = float(RMS(approx - self.test_values) / RMS(self.test_values))
 
       if verbose > 0:
@@ -242,8 +108,126 @@ class TreeCross:
           f'self.max_dx={self.max_dx:.2e}',
           *([f'test_err={self.test_err:.2e}'] if n_test > 0 else [])
           )
+      # exit if update and optionally error estimate are below tolerance
       if self.max_dx < eps and (n_test == 0 or self.test_err < eps):
         break
+
+  def _sweep(self, node: TreeNode, indexset_p: np.ndarray, indexset_dims_p: np.ndarray, eval_f: Callable):
+    """
+    Recursive cross sweep over the subtree of node, given the index set indexset_p
+    of the complement. Returns the non orthogonal factor to be absorbed by the parent.
+    """
+    if node.isleaf:
+      n, r = self.tensor.shape[node.dim], self.tensor.cores[node].shape[-1]
+      dims = np.concatenate((indexset_dims_p, np.array([node.dim], dtype=int)))
+      order = np.argsort(dims)
+      indexset = np.hstack(
+        (np.tile(indexset_p, (n,1)), np.repeat(np.arange(n), r).reshape(-1,1))
+      )
+      eval = self._sample(node, indexset[:, order], (n, r), eval_f)
+
+      u,s,v = svd_cut_torch(eval, tol=self._svd_tol, norm='fro')
+      r = torch.diag(s) @ v
+      ind, C = self._select_rows(u, self._kickrank, self._random_kick)
+      C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
+      qmax = u[ind]
+      self.tensor.cores[node] = C
+
+      self.indexset_list[node] = ind.reshape(-1,1)
+      return qmax @ r
+
+    else:
+      if self._resample:
+        # sample core at indexset
+        indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
+        self.tensor.cores[node] = self._sample(node, indexset, self.tensor.cores[node].shape, eval_f)
+
+      for i, child in enumerate(node.children):
+        core = self.tensor.cores[node]
+
+        # orth toward child
+        core = torch.moveaxis(core, i, -1)
+        old_shape = core.shape[:-1]
+        core = core.reshape(-1, core.shape[-1])
+        u,s,v = svd_cut_torch(core, tol=self._svd_tol, norm='fro')
+        r = torch.diag(s) @ v
+        ind, C = self._select_rows(u, self._kickrank, self._random_kick)
+        C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
+        qmax = u[ind]
+        core = C
+        # push non orth factor to child
+        self.tensor.cores[child] = torch.tensordot(self.tensor.cores[child], qmax @ r, dims=((-1,),(-1,)))
+
+        # update index set
+        indexset_sizes = [np.arange(self.indexset_list[c].shape[0]) for c in child.siblings] + [np.arange(indexset_p.shape[0])]
+        ind_grid = np.meshgrid(*indexset_sizes, indexing='ij')
+        indexsets = [self.indexset_list[c] for c in child.siblings] + [indexset_p]
+        indexset = np.concatenate(
+          [ind[grid.flatten()] for ind, grid in zip(indexsets, ind_grid)],
+          axis = -1
+        )
+        indexset = indexset[ind]
+        indexset_dims = np.concatenate([self.indexset_dims_list[c] for c in child.siblings] + [indexset_dims_p])
+
+        # go to child
+        factor = self._sweep(child, indexset, indexset_dims, eval_f)
+        # absord non orth factor from child
+        core = core.reshape(old_shape + (-1,))
+        # TODO can skip this for last child
+        core = torch.tensordot(core, factor, dims=((-1,),(-1,)))
+        self.tensor.cores[node] = torch.moveaxis(core, -1, i)
+
+      # orth towards parent
+      if not node.isroot:
+        # sample core at indexset
+        indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
+        core = self._sample(node, indexset, self.tensor.cores[node].shape, eval_f)
+
+        old_shape = core.shape[:-1]
+        core = core.reshape(-1, core.shape[-1])
+        u,s,v = svd_cut_torch(core, tol=self._svd_tol, norm='fro')
+        r = torch.diag(s) @ v
+        ind, C = self._select_rows(u, self._kickrank, self._random_kick)
+        C = C.to(device=self.tensor.device, dtype=self.tensor.dtype)
+        qmax = u[ind]
+        core = C.reshape(old_shape + (-1,))
+        self.tensor.cores[node] = core
+
+        # update index set towards parent
+        ind_grid = np.meshgrid(
+          *[np.arange(self.indexset_list[c].shape[0]) for c in node.children],
+          indexing='ij'
+        )
+        indexset = np.concatenate(
+          [*[self.indexset_list[c][grid.flatten()] for c, grid in zip(node.children, ind_grid)]],
+          axis = -1
+        )
+        self.indexset_list[node] = indexset[ind]
+
+        return qmax @ r
+
+      elif not self._resample and node.n_children > 2:
+        # The root is never sampled on the way up. For more than two children, the
+        # interpolation from the children's factors keeps a stale basis and the cross
+        # stagnates, so sample the root core at the final index sets.
+        indexset = self._assemble_indexset(node, indexset_p, indexset_dims_p)
+        self.tensor.cores[node] = self._sample(node, indexset, self.tensor.cores[node].shape, eval_f)
+
+  def _sample(self, node: TreeNode, indexset: np.ndarray, shape: tuple, eval_f: Callable):
+    """
+    Evaluate the target at indexset, reshaped to shape, and update max_dx with the
+    residual to the current core at node.
+    """
+    eval = eval_f(indexset).to(dtype=self.tensor.dtype, device=self.tensor.device)
+    self.n_eval += eval.shape[0]
+    core = eval.reshape(shape)
+
+    # compute local residual
+    res = RMS(core - self.tensor.cores[node].reshape(shape))
+    self.max_dx = max(res, self.max_dx)
+    if self._verbose > 1: print(f'node {node.id}, res = {res:.2e}')
+
+    return core
 
   def _select_rows(self, u, kickrank, random_kick):
     """
@@ -261,10 +245,13 @@ class TreeCross:
         C[ind] = torch.eye(len(ind), dtype=C.dtype, device=C.device)
     return ind, C
 
-  def _init(self):
+  def _init_cross(self):
     _, self.indexset_list, self.indexset_dims_list, _ = self.tensor._orth_subtree_maxvol(self.tensor.tree.root)
 
   def _assemble_indexset(self, node: TreeNode, indexset_p: np.ndarray, indexset_dims_p: np.ndarray):
+    """
+    Assemble maxvol index set at node.
+    """
     indexset_sizes = [np.arange(self.indexset_list[c].shape[0]) for c in node.children] + [np.arange(indexset_p.shape[0])]
     ind_grid = np.meshgrid(*indexset_sizes, indexing='ij')
     indexsets = [self.indexset_list[c] for c in node.children] + [indexset_p]
@@ -274,5 +261,5 @@ class TreeCross:
     )
     indexset_dims = np.concatenate([self.indexset_dims_list[c] for c in node.children] + [indexset_dims_p])
     order = np.argsort(indexset_dims)
-    
+
     return indexset[:, order]

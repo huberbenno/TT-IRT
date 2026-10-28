@@ -136,12 +136,12 @@ def test_root_sampling(backend, tree_type, capsys):
 def test_force_init(backend, monkeypatch):
   cross, x, X, eval_f = setup_cross(backend, 'nary')
   n_init = 0
-  init = cross._init
+  init = cross._init_cross
   def counting_init():
     nonlocal n_init
     n_init += 1
     init()
-  monkeypatch.setattr(cross, '_init', counting_init)
+  monkeypatch.setattr(cross, '_init_cross', counting_init)
 
   cross.run(eval_f, n_iter=1)
   assert n_init == 1
