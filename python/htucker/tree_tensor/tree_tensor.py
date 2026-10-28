@@ -171,7 +171,7 @@ class TreeBasedTensor:
     return worker(self.tree.root)[:, 0]
 
   @staticmethod
-  def randn(tree: Tree, shape, rank: int, seed=None, dtype=np.float64, scale: float = 1.) -> TreeBasedTensor:
+  def randn(tree: Tree, shape, rank, seed=None, dtype=np.float64, scale: float = 1.) -> TreeBasedTensor:
     """
     Build a tensor with normally distributed cores.
 
@@ -184,8 +184,8 @@ class TreeBasedTensor:
       Object defining the dimension tree strucure.
     shape: tuple(int, ...)
       Shape of the tensor.
-    rank: int
-      Uniform rank for initialization.
+    rank: int or sequence of int
+      Uniform rank, or the rank of every node indexed by node id (the entry of the root is ignored).
     seed: int, optional
       Seed for the rng. Default uses system entropy.
     dtype: numpy dtype, optional
@@ -198,15 +198,18 @@ class TreeBasedTensor:
       f'Tree order must match shape ({tree.order} != {len(shape)}).'
 
     rng = np.random.default_rng(seed)
+    ranks = tree.n_nodes * [rank] if np.isscalar(rank) else [int(r) for r in rank]
+    assert len(ranks) == tree.n_nodes, f'Number of ranks must match the number of nodes ({len(ranks)} != {tree.n_nodes}).'
     cores = []
     for node in tree.node_list:
-      fan_in = rank ** node.n_children
+      child_ranks = tuple(ranks[child.id] for child in node.children)
+      fan_in = np.prod(child_ranks)
       if node.isleaf:
-        cores += [rng.standard_normal((shape[node.dim], rank))]
+        cores += [rng.standard_normal((shape[node.dim], ranks[node.id]))]
       elif node.isroot:
-        cores += [scale / np.sqrt(fan_in) * rng.standard_normal(node.n_children * (rank,) + (1,))]
+        cores += [scale / np.sqrt(fan_in) * rng.standard_normal(child_ranks + (1,))]
       else:
-        cores += [1. / np.sqrt(fan_in) * rng.standard_normal(node.n_children * (rank,) + (rank,))]
+        cores += [1. / np.sqrt(fan_in) * rng.standard_normal(child_ranks + (ranks[node.id],))]
 
     return TreeBasedTensor(cores, tree, dtype=dtype)
 

@@ -363,6 +363,27 @@ def test_randn_entries_variance(backend, tree_type, scale):
   assert np.all(np.abs(rel_var - 1) < tol), f'relative variances {rel_var}, tolerances {tol}'
 
 
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_randn_per_node_ranks(backend, tree_type):
+  tree = Tree.from_tupletree(TREES[tree_type])
+  shape = SIZES[:tree.order]
+  ranks = [2 + node.id % 3 for node in tree.node_list]
+  x = backend.TT.randn(tree, shape, ranks, seed=0)
+  for node in tree.node_list:
+    r = 1 if node.isroot else ranks[node.id]
+    expected = (shape[node.dim], r) if node.isleaf else tuple(ranks[c.id] for c in node.children) + (r,)
+    assert tuple(x.cores[node].shape) == expected, f'core shape mismatch at node {node.id}'
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_randn_uniform_rank_as_sequence(backend, tree_type):
+  # an int rank and the equivalent per-node ranks draw the same tensor
+  tree = Tree.from_tupletree(TREES[tree_type])
+  x = backend.TT.randn(tree, SIZES[:tree.order], 3, seed=0)
+  y = backend.TT.randn(tree, SIZES[:tree.order], tree.n_nodes * [3], seed=0)
+  for cx, cy in zip(x.cores, y.cores):
+    np.testing.assert_array_equal(np.asarray(cx), np.asarray(cy))
+
+
 # ---------- torch ----------
 
 def make(device='cpu', dtype=torch.float64):

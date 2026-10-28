@@ -189,7 +189,7 @@ class TreeBasedTensor:
     return worker(self.tree.root)[:, 0]
 
   @staticmethod
-  def randn(tree: Tree, shape, rank: int, seed=None, dtype=torch.float64, device=None, scale: float = 1.) -> TreeBasedTensor:
+  def randn(tree: Tree, shape, rank, seed=None, dtype=torch.float64, device=None, scale: float = 1.) -> TreeBasedTensor:
     """
     Build a tensor with normally distributed cores.
 
@@ -202,8 +202,8 @@ class TreeBasedTensor:
       Object defining the dimension tree strucure.
     shape: tuple(int, ...)
       Shape of the tensor.
-    rank: int
-      Uniform rank for initialization.
+    rank: int or sequence of int
+      Uniform rank, or the rank of every node indexed by node id (the entry of the root is ignored).
     seed: int, optional
       Seed for the rng. Default uses system entropy.
     scale: float, optional
@@ -215,15 +215,18 @@ class TreeBasedTensor:
     rng = torch.Generator()
     if seed is not None: rng.manual_seed(seed)
     else: rng.seed()
+    ranks = tree.n_nodes * [rank] if np.isscalar(rank) else [int(r) for r in rank]
+    assert len(ranks) == tree.n_nodes, f'Number of ranks must match the number of nodes ({len(ranks)} != {tree.n_nodes}).'
     cores = []
     for node in tree.node_list:
-      fan_in = rank ** node.n_children
+      child_ranks = tuple(ranks[child.id] for child in node.children)
+      fan_in = np.prod(child_ranks)
       if node.isleaf:
-        cores += [torch.randn((shape[node.dim], rank), generator=rng, dtype=dtype)]
+        cores += [torch.randn((shape[node.dim], ranks[node.id]), generator=rng, dtype=dtype)]
       elif node.isroot:
-        cores += [scale / np.sqrt(fan_in) * torch.randn(node.n_children * (rank,) + (1,), generator=rng, dtype=dtype)]
+        cores += [scale / np.sqrt(fan_in) * torch.randn(child_ranks + (1,), generator=rng, dtype=dtype)]
       else:
-        cores += [1. / np.sqrt(fan_in) * torch.randn(node.n_children * (rank,) + (rank,), generator=rng, dtype=dtype)]
+        cores += [1. / np.sqrt(fan_in) * torch.randn(child_ranks + (ranks[node.id],), generator=rng, dtype=dtype)]
 
     return TreeBasedTensor(cores, tree, dtype=dtype, device=device)
 
