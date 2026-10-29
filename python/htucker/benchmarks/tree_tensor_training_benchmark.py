@@ -134,7 +134,7 @@ def benchmark(configs):
   for args in configs:
     results += [(args, run_isolated(args))]
 
-  print('\n== summary (losses after the final rounding, times in s) ==')
+  print('\n== summary (final losses, after the final rounding if rounding, times in s) ==')
   print_summary(results)
   print('\n== train / test loss per epoch ==')
   print_losses(results)
