@@ -1,12 +1,9 @@
 import numpy as np
 import torch
 import copy
-from scipy.sparse import csr_matrix, issparse
+from scipy.sparse import issparse
+
 from util.maxvol_torch import rect_maxvol
-from tt import set_backend as tt_set_backend
-tt_set_backend('torch')
-
-
 from tree_tensor.tree_tensor_torch import TreeBasedTensor, svd_cut_torch
 from tree.tree import NodeIndexedList, TreeNode
 
@@ -49,6 +46,9 @@ class TreeALSCross:
     Initial rank of the random solution. 0 uses the ranks of A_params[0].
   verbose: int, optional
     0 is silent, 1 prints a line per sweep, 2 additionally prints dx for every node.
+  seed: int, optional
+    Seed for the random initial solution and the random initial residual data.
+    Default uses system entropy.
 
   Attributes
   ----------
@@ -70,7 +70,8 @@ class TreeALSCross:
       use_indices=False,
       kickrank=0,
       rinit=0,
-      verbose=0
+      verbose=0,
+      seed=None
     ):
     # store parameters
     self.A_params = [copy.deepcopy(A_param) for A_param in A_params]
@@ -86,8 +87,12 @@ class TreeALSCross:
     assert all(A_param.dtype == self.dtype for A_param in A_params), 'Incompatible data types.'
     assert all(b_param.dtype == self.dtype for b_param in b_params), 'Incompatible data types.'
 
+    self.rng_numpy = np.random.default_rng(seed)
     self.rng_torch = torch.Generator()
-    self.rng_numpy = np.random.default_rng()
+    if seed is None:
+      self.rng_torch.seed()
+    else:
+      self.rng_torch.manual_seed(seed)
 
     # tree and shape must be the same for all parameters (except spatial dim)
     # currently not checked
@@ -134,7 +139,8 @@ class TreeALSCross:
     self.Nx = self.A0[0][0].shape[1]
 
     if rinit > 0:
-      self.u = TreeBasedTensor.randn(tree=self.tree, shape=(self.Nx,) + self.shape, rank=rinit, dtype=self.dtype)
+      self.u = TreeBasedTensor.randn(tree=self.tree, shape=(self.Nx,) + self.shape, rank=rinit,
+                                     dtype=self.dtype, seed=int(self.rng_numpy.integers(2**63)))
       self.u, indexset_list, indexset_dims_list, maxvol_ind_list = self._orth_towards_0(self.u)
       self.u.cores[self.root_node] = torch.moveaxis(torch.squeeze(self.u.cores[self.root_node], dim=-1), 0,-1)
     else:
