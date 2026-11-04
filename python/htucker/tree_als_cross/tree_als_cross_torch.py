@@ -11,6 +11,57 @@ from tree_tensor.tree_tensor_torch import TreeBasedTensor, svd_cut_torch
 from tree.tree import NodeIndexedList, TreeNode
 
 class TreeALSCross:
+  """
+  ALS-cross solver for parametric linear systems A(y) u(y) = b(y) in tree-based
+  tensor format.
+
+  The matrix and the RHS depend affinely on coefficients, which are given as tree
+  tensors over (coefficient index, y_1, ..., y_d). The solution u is a tree tensor over
+  (spatial index, y_1, ..., y_d). Its spatial core is computed by solving the full
+  system at a few parameter indices (via assem_solve_fun), all other cores by local
+  systems, which are projected onto the solution basis towards the spatial core
+  (Galerkin) and interpolated at maxvol indices away from it (cross).
+
+  Dimension 0 (spatial) must be a leaf and the first child of the root. All tensors
+  must share the tree, the parameter shape and the dtype (real or complex).
+
+  Parameters
+  ----------
+  A_params: list[TreeBasedTensor]
+    Coefficients of the matrix components, A_params[k] has shape (n_k, n_1, ..., n_d).
+  b_params: list[TreeBasedTensor]
+    Coefficients of the RHS components, b_params[k] has shape (m_k, n_1, ..., n_d).
+  assem_solve_fun:
+    Object implementing the spatial problem with Nx degrees of freedom:
+
+    - matrix(cores): cores[k] is an (n_k, r_k) tensor. Returns a list with a list of
+      r_k (Nx, Nx) matrices for each component k, assembled from the columns of cores[k].
+    - rhs(cores): cores[k] is an (m_k, r_k) tensor. Returns a list with a list of r_k
+      (Nx, 1) vectors for each component k.
+    - solve(coeff_A, coeff_b): coeff_A[k] is (n_k, I) and coeff_b[k] is (m_k, I).
+      Returns a list of the I (Nx, 1) solutions for the columns of the coefficients.
+  use_indices: bool, optional
+    Not used currently.
+  kickrank: int, optional
+    Rank of the residual based (AMEn) enrichment of the solution. 0 disables rank
+    adaption, then the ranks can only decrease.
+  rinit: int, optional
+    Initial rank of the random solution. 0 uses the ranks of A_params[0].
+  verbose: int, optional
+    0 is silent, 1 prints a line per sweep, 2 additionally prints dx for every node.
+
+  Attributes
+  ----------
+  u: TreeBasedTensor
+    Current solution. Internally the root is treated as a child of the spatial leaf
+    (root_node), so its core has the spatial axis last. Use get_tensor for a regular
+    tensor.
+  n_eval: int
+    Number of solves of the full spatial problem.
+  iter_total: int
+    Number of sweeps done.
+  """
+
   def __init__(
       self,
       A_params: list[TreeBasedTensor],
@@ -105,6 +156,18 @@ class TreeALSCross:
       print('Init finished')
 
   def run(self, n_iter=1, tol=1e-3):
+    """
+    Run sweeps over the tree, starting at the spatial core. Can be called repeatedly
+    to continue the iteration.
+
+    Parameters
+    ----------
+    n_iter: int, optional
+      Number of sweeps. All sweeps are done, there is no stopping criterion.
+    tol: float, optional
+      Relative truncation tolerance, split evenly over the cores
+      (tol / sqrt(order) for each truncation).
+    """
     self.tol = tol
     self.max_dx = 0
 
@@ -207,6 +270,14 @@ class TreeALSCross:
     self.iter_total += n_iter
 
   def get_tensor(self):
+    """
+    Current solution as a standalone tensor.
+
+    Returns
+    -------
+    tensor: TreeBasedTensor
+      Copy of the solution with shape (Nx, n_1, ..., n_d) on the original tree.
+    """
     tensor = TreeBasedTensor(self.u)
     root_core = tensor.cores[tensor.tree.root]
     root_core = torch.unsqueeze(torch.moveaxis(root_core, -1, 0), -1)
@@ -214,6 +285,19 @@ class TreeALSCross:
     return tensor
 
   def _als_interior_worker(self, node: TreeNode):
+    """
+    Recursive sweep through the subtree below an interior node.
+
+    Solves for the core of node, then for each child truncates (and enriches) the
+    core towards the child, updates the projections from above and recurses. Finally
+    solves again, truncates towards the parent, selects maxvol indices and updates
+    the interpolation (UA, Ub) and projections (UAU, UF) of the subtree.
+
+    Parameters
+    ----------
+    node: TreeNode
+      Interior node of the modified tree (root_node or below).
+    """
     #### solve reduced system
     dx = self._solve_reduced(node)
     self.max_dx = max(self.max_dx, dx)
@@ -634,6 +718,15 @@ class TreeALSCross:
 
 
   def _als_leaf_worker(self, node: TreeNode):
+    """
+    Solve for the core of a parameter leaf, truncate (and enrich) it, select maxvol
+    indices and update the interpolation (UA, Ub) and projections (UAU, UF) of the leaf.
+
+    Parameters
+    ----------
+    node: TreeNode
+      Leaf of the modified tree, not the spatial leaf.
+    """
     # compute RHS projection
     crF = torch.zeros(1, dtype=self.dtype)
     for k in range(self.M_b):
@@ -767,6 +860,23 @@ class TreeALSCross:
 
 
   def _solve_reduced(self, node:TreeNode):
+    """
+    Solve the local system for the core of an interior node and store it in u.
+
+    The children are interpolated at their index sets (UA, Ub), the parent side is
+    projected onto the solution basis (UAU, UF). This gives one small system per
+    combination of child indices.
+
+    Parameters
+    ----------
+    node: TreeNode
+      Interior node of the modified tree.
+
+    Returns
+    -------
+    dx: torch.tensor
+      Relative change of the core (0-dim).
+    """
     crA = [None] * self.M_A
     for k in range(self.M_A):
       tmp = self.A_params[k].cores[node]
@@ -808,6 +918,11 @@ class TreeALSCross:
 
 
   def _init_right_projection(self):
+    """
+    Initialize the projections UAU[k][node] (conj(U), U, A_k) and UF[k][node]
+    (conj(U), b_k) of all subtrees below root_node onto the initial solution basis.
+    The conjugated basis is always in the first slot.
+    """
     self.UAU = [NodeIndexedList(self.tree.n_nodes * [None]) for k in range(self.M_A)]
     self.UF = [NodeIndexedList(self.tree.n_nodes * [None]) for k in range(self.M_b)]
 
@@ -869,6 +984,23 @@ class TreeALSCross:
 
 
   def _partial_evals(self, tensor: TreeBasedTensor, maxvol_ind_list):
+    """
+    Evaluate the subtrees of a tensor at the index sets given by maxvol indices.
+
+    Parameters
+    ----------
+    tensor: TreeBasedTensor
+      Tensor with the root core in the modified layout.
+    maxvol_ind_list: NodeIndexedList
+      Maxvol indices of each node, into the rows of its leaf core or into the product
+      of the children's index sets (first child slowest).
+
+    Returns
+    -------
+    partial_evals: NodeIndexedList
+      Matrix (n_ind, r) for each node below root_node, with the subtree evaluated at
+      the n_ind indices.
+    """
     partial_evals = NodeIndexedList(tensor.tree.n_nodes * [None])
 
     def worker(node):
@@ -891,6 +1023,10 @@ class TreeALSCross:
     return partial_evals
 
   def _init_AMEn_data(self):
+    """
+    Initialize the data for the residual enrichment: the solution and parameters at
+    random residual indices (ZU, ZA, Zb) and random residual projections (ZUA, ZUb).
+    """
     # no solution yet, fill random
     self.ZUA = [NodeIndexedList(self.tree.n_nodes * [None]) for _ in self.A_params] # rz x ru x rA
     self.ZUb = [NodeIndexedList(self.tree.n_nodes * [None]) for _ in self.b_params] # rz x rb
@@ -969,6 +1105,30 @@ class TreeALSCross:
 
   @staticmethod
   def _orth_towards_0(tensor: TreeBasedTensor, return_indices = True):
+    """
+    Bring a tensor into interpolatory form towards the leaf of dimension 0.
+
+    All cores except the leaf of dimension 0 become interpolation matrices at maxvol
+    indices, the leaf of dimension 0 holds the values. The tensor is modified in place.
+
+    Parameters
+    ----------
+    tensor: TreeBasedTensor
+      Tensor with dimension 0 in the first child of the root.
+    return_indices: bool, optional
+      Also return the index sets.
+
+    Returns
+    -------
+    tensor: TreeBasedTensor
+      The modified tensor.
+    indexset_list: NodeIndexedList
+      Multi-indices of the index set of each node (only if return_indices).
+    indexset_dims_list: NodeIndexedList
+      Dimensions of the multi-indices of each node (only if return_indices).
+    maxvol_ind_list: NodeIndexedList
+      Maxvol indices of each node, see _partial_evals (only if return_indices).
+    """
 
     # orth towards root
     _, indexset_list, indexset_dims_list, maxvol_ind_list = tensor._orth_subtree_maxvol(tensor.tree.root)
