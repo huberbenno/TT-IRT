@@ -138,7 +138,7 @@ class TreeALSCross:
       # truncate U0
       # TODO maybe use cheaper option
       U0, s,v = svd_cut_torch(U0, tol/np.sqrt(self.tree.order))
-      v = torch.diag(s) @ v
+      v = s[:, None] * v # broadcasting, since s is real also for complex v
       self.u.cores[special] = U0
       # cast non-orth factor to next core, which is root as child
       self.u.cores[self.root_node] = torch.tensordot(self.u.cores[self.tree.root], v, dims=((-1,),(-1,)))
@@ -148,18 +148,16 @@ class TreeALSCross:
         # compute residual at indices
         rz = self.ZA[0][self.root_node].shape[0]
         Z0 = torch.zeros((self.Nx, rz), dtype=self.dtype)
+        cru = torch.tensordot(U0 @ v, self.ZU[self.root_node], dims=((-1,),(-1,)))
         for k in range(self.M_A):
-          cru = torch.tensordot(U0 @ v, self.ZU[self.root_node], dims=((-1,),(-1,)))
+          if issparse(self.A0[k][0]):
+            raise NotImplementedError
           for l in range(rz):
-            if issparse(self.A0[k][0]):
-              raise NotImplementedError
-              crA = csr_matrix((self.Nx, self.Nx))
-            else:
-              crA = torch.zeros((self.Nx, self.Nx), dtype=self.dtype)
+            crA = torch.zeros((self.Nx, self.Nx), dtype=self.dtype)
             for j, A0_j in enumerate(self.A0[k]):
               crA += A0_j * self.ZA[k][self.root_node][l,j]
 
-          Z0[:,l] += torch.ravel(crA @ cru[:,l])
+            Z0[:,l] += torch.ravel(crA @ cru[:,l])
 
         for k in range(self.M_b):
           Z0 -= torch.tensordot(self.F0[k], self.Zb[k][self.root_node], dims=((-1,),(-1,)))
@@ -206,6 +204,8 @@ class TreeALSCross:
         print(f'= swp={iteration} finished, max_dx={self.max_dx:.2e}')
       self.max_dx = 0
 
+    self.iter_total += n_iter
+
   def get_tensor(self):
     tensor = TreeBasedTensor(self.u)
     root_core = tensor.cores[tensor.tree.root]
@@ -230,7 +230,7 @@ class TreeALSCross:
       core = core.reshape(-1, core.shape[-1])
       cru,s,v = svd_cut_torch(core, tol=self.tol/np.sqrt(self.tree.order))
       # cast non orth factor to child
-      v = torch.diag(s) @ v
+      v = s[:, None] * v # broadcasting, since s is real also for complex v
       self.u.cores[child] = torch.tensordot(self.u.cores[child], v, dims=((-1,),(-1,)))
 
       ## AMEn rank adaption
@@ -282,13 +282,13 @@ class TreeALSCross:
           offset = node.n_children+1
           einsum_args = [
             crC, np.arange(1, 2*offset, 2),
-            self.Zb[k][child], [1+2*child_ind, 2*child_ind]
+            self.Zb[k][child], [2*child_ind, 1+2*child_ind]
             ]
           for sibling in child.siblings:
             si = sibling.child_ind
-            einsum_args += [self.UF[k][sibling], [2*si, 2*(si+1)]]
+            einsum_args += [self.UF[k][sibling], [2*si, 2*si+1]]
 
-          einsum_args += [self.UF[k][node.parent], [2*(offset-1), 2*offset]]
+          einsum_args += [self.UF[k][node.parent], [2*offset-2, 2*offset-1]]
           einsum_args += [np.arange(0, 2*offset, 2)]
           crz -= torch.einsum(*einsum_args)
 
@@ -299,9 +299,9 @@ class TreeALSCross:
             ]
           for sibling in child.siblings:
             si = sibling.child_ind
-            einsum_args += [self.ZUb[k][sibling], [2*si, 2*(si+1)]]
+            einsum_args += [self.ZUb[k][sibling], [2*si, 2*si+1]]
 
-          einsum_args += [self.ZUb[k][node.parent], [2*(offset-1), 2*offset]]
+          einsum_args += [self.ZUb[k][node.parent], [2*offset-2, 2*offset-1]]
           einsum_args += [np.arange(0, 2*offset, 2)]
           crz_new -= torch.einsum(*einsum_args)
 
@@ -329,8 +329,8 @@ class TreeALSCross:
         # build args list for einsum
         ind_end = 3*(node.n_children+1)
         einsum_args = [
-          cru, np.arange(0, ind_end, 3),
-          cru_conj, np.arange(1, ind_end, 3),
+          cru_conj, np.arange(0, ind_end, 3),
+          cru, np.arange(1, ind_end, 3),
           crC, np.arange(2, ind_end, 3)
           ]
         for sibling in child.siblings:
@@ -422,7 +422,7 @@ class TreeALSCross:
     old_shape = core.shape
     core = core.reshape(-1, core.shape[-1])
     cru, s, v = svd_cut_torch(core, tol=self.tol/np.sqrt(self.tree.order))
-    v = torch.diag(s) @ v
+    v = s[:, None] * v # broadcasting, since s is real also for complex v
 
     ## rank adaption
     if self.kickrank > 0:
@@ -466,9 +466,9 @@ class TreeALSCross:
         offset = node.n_children+1
         einsum_args = [crC, np.arange(1, 2*offset, 2)]
         for ci, child in enumerate(node.children):
-          einsum_args += [self.Ub[k][child], [2*ci, 2*(ci+1)]]
+          einsum_args += [self.Ub[k][child], [2*ci, 2*ci+1]]
 
-        einsum_args += [self.ZUb[k][node.parent], [2*(offset-1), 2*offset]]
+        einsum_args += [self.ZUb[k][node.parent], [2*offset-2, 2*offset-1]]
         einsum_args += [np.arange(0, 2*offset, 2)]
         crz -= torch.einsum(*einsum_args)
 
@@ -538,8 +538,8 @@ class TreeALSCross:
       # build args list for einsum
       ind_end = 3*(node.n_children+1)
       einsum_args = [
-        cru, np.arange(0, ind_end, 3),
-        cru_conj, np.arange(1, ind_end, 3),
+        cru_conj, np.arange(0, ind_end, 3),
+        cru, np.arange(1, ind_end, 3),
         crC, np.arange(2, ind_end, 3)
         ]
       for i, child in enumerate(node.children):
@@ -665,7 +665,7 @@ class TreeALSCross:
     core = self.u.cores[node]
     old_shape = core.shape[:-1]
     cru, s, v = svd_cut_torch(core, tol=self.tol/np.sqrt(self.tree.order))
-    v = torch.diag(s) @ v
+    v = s[:, None] * v # broadcasting, since s is real also for complex v
 
     ## rank adaption
     if self.kickrank > 0:
@@ -706,10 +706,8 @@ class TreeALSCross:
     self.u.cores[node] = C.reshape(old_shape + (-1,))
 
     # cast non-orth factor to parent
-    if node.parent.id == self.root_node.id:
-      ci = node.child_ind - 1
-    else:
-      ci = node.child_ind
+    # (child_ind refers to the modified tree, i.e. is already shifted for children of root_node)
+    ci = node.child_ind
     core = self.u.cores[node.parent]
     core = torch.tensordot(core, qmax @ v, dims=((ci,), (-1,)))
     self.u.cores[node.parent] = torch.moveaxis(core, -1, ci)
@@ -731,7 +729,7 @@ class TreeALSCross:
       cru = self.u.cores[node]
       crC = self.b_params[k].cores[node]
 
-      self.UF[k][node] = torch.tensordot(cru, crC, dims=((0,),(0,)))
+      self.UF[k][node] = torch.tensordot(torch.conj(cru), crC, dims=((0,),(0,)))
 
     ## rank adaption
     if self.kickrank > 0:
@@ -824,7 +822,7 @@ class TreeALSCross:
           cru = self.u.cores[node]
           crC = self.b_params[k].cores[node]
 
-          self.UF[k][node] = torch.tensordot(cru, crC, dims=((0,),(0,)))
+          self.UF[k][node] = torch.tensordot(torch.conj(cru), crC, dims=((0,),(0,)))
 
       else:
         cru = self.u.cores[node]
@@ -841,8 +839,8 @@ class TreeALSCross:
           # build args list for einsum
           ind_end = 3*(node.n_children+1)
           einsum_args = [
-            cru, np.arange(0, ind_end, 3),
-            cru_conj, np.arange(1, ind_end, 3),
+            cru_conj, np.arange(0, ind_end, 3),
+            cru, np.arange(1, ind_end, 3),
             crC, np.arange(2, ind_end, 3)
             ]
           for i, child in enumerate(node.children):
@@ -878,11 +876,14 @@ class TreeALSCross:
         partial_evals[node] = tensor.cores[node][maxvol_ind_list[node]]
         return
       else:
+        # contract children in order, so that the first child is the slowest index
+        # (as for the maxvol indices from _orth_subtree_maxvol)
         tmp = tensor.cores[node]
-        for i, child in enumerate(node.children):
+        for child in node.children:
           worker(child)
-          tmp = torch.tensordot(partial_evals[child], tmp, dims=((-1,),(i,)))
+          tmp = torch.tensordot(tmp, partial_evals[child], dims=((0,),(-1,)))
 
+        tmp = torch.moveaxis(tmp, 0, -1)
         tmp = tmp.reshape(-1, tmp.shape[-1])
         partial_evals[node] = tmp[maxvol_ind_list[node]]
 
