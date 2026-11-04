@@ -1,7 +1,10 @@
 """
-Tests for tree_als_cross.tree_als_cross_torch.TreeALSCross on a small affine 1d
-diffusion / convection / reaction problem, compared with a dense reference solution
-over the full parameter grid.
+Tests for TreeALSCross (numpy and torch version, see the `backend` fixture) on small
+affine 1d diffusion / convection / reaction and Helmholtz problems, compared with a
+dense reference solution over the full parameter grid.
+
+The problems and the parameter tensors are built in torch and converted for the
+backend, the solver state is converted back to torch for the checks.
 """
 import copy
 import itertools
@@ -13,7 +16,6 @@ import torch
 from tree.tree import Tree
 from tree.tree_util import zero_root_tupletree
 from tree_tensor.tree_tensor_torch import TreeBasedTensor
-from tree_als_cross.tree_als_cross_torch import TreeALSCross
 
 
 # dim 0 (spatial) must be the first child of the root
@@ -155,16 +157,34 @@ def reference(problem, A_params, b_params):
   return U
 
 
-def setup(tree_type='balanced', problem='diffusion', problem_kwargs={}, **kwargs):
+def _t(x):
+  """ torch tensor from a numpy array or torch tensor (shares memory). """
+  return torch.as_tensor(x)
+
+def dense(tensor):
+  """ Full torch tensor from a numpy or torch TreeBasedTensor. """
+  return _t(tensor.numpy())
+
+def make_als(backend, problem, A_params, b_params, **kwargs):
+  """ Solver of the backend for a torch problem and torch parameter tensors. """
+  return backend.ALS(
+    [backend.from_torch_tensor(x) for x in A_params],
+    [backend.from_torch_tensor(x) for x in b_params],
+    backend.wrap_problem(problem), **kwargs)
+
+def setup(backend, tree_type='balanced', problem='diffusion', problem_kwargs={}, **kwargs):
   tree = Tree.from_tupletree(TREES[tree_type])
   problem, A_params, b_params = PROBLEMS[problem](tree, **problem_kwargs)
-  als = TreeALSCross(A_params, b_params, problem, **kwargs)
+  als = make_als(backend, problem, A_params, b_params, **kwargs)
   return als, problem, A_params, b_params
 
 def rel_err(als, problem, A_params, b_params):
   U = reference(problem, A_params, b_params)
-  u = als.get_tensor().to_torch().to(U.dtype)
+  u = dense(als.get_tensor()).to(U.dtype)
   return (torch.linalg.norm(u - U) / torch.linalg.norm(U)).item()
+
+def core_dtypes(tensor):
+  return {_t(c).dtype for c in tensor.cores}
 
 
 def test_reference_problems():
@@ -185,14 +205,15 @@ def test_reference_problems():
 @pytest.mark.parametrize('kickrank', [0, 2])
 @pytest.mark.parametrize('tree_type', TREES.keys())
 @pytest.mark.parametrize('problem', PROBLEMS.keys())
-def test_runs(problem, tree_type, kickrank, rinit):
-  als, problem, A_params, b_params = setup(tree_type, problem, kickrank=kickrank, rinit=rinit)
+def test_runs(backend, problem, tree_type, kickrank, rinit):
+  als, problem, A_params, b_params = setup(backend, tree_type, problem, kickrank=kickrank, rinit=rinit)
   als.run(n_iter=2, tol=1e-8)
 
   u = als.get_tensor()
+  assert isinstance(u, backend.TT)
   assert u.shape == (N,) + A_params[0].shape[1:]
   assert u.tree.root.n_children == Tree.from_tupletree(TREES[tree_type]).root.n_children
-  assert np.isfinite(u.numpy()).all()
+  assert torch.isfinite(dense(u)).all()
   # the approximation should be in the right ballpark even without rank adaption
   assert rel_err(als, problem, A_params, b_params) < 0.5
 
@@ -200,17 +221,17 @@ def test_runs(problem, tree_type, kickrank, rinit):
 @pytest.mark.parametrize('rinit', [0, 3])
 @pytest.mark.parametrize('tree_type', TREES.keys())
 @pytest.mark.parametrize('problem', PROBLEMS.keys())
-def test_exact_with_kickrank(problem, tree_type, rinit):
+def test_exact_with_kickrank(backend, problem, tree_type, rinit):
   # the parameter grid is small, so rank adaption reaches the exact solution
-  als, *data = setup(tree_type, problem, kickrank=2, rinit=rinit)
+  als, *data = setup(backend, tree_type, problem, kickrank=2, rinit=rinit)
   als.run(n_iter=8, tol=1e-10)
   assert rel_err(als, *data) < EXACT_TOL
 
 
 @pytest.mark.parametrize('n_A, n_b', [(1, 1), (1, 2), (2, 1), (2, 2), (3, 1), (3, 2)])
 @pytest.mark.parametrize('kickrank', [0, 2])
-def test_components(n_A, n_b, kickrank):
-  als, *data = setup('wide', problem_kwargs=dict(n_A=n_A, n_b=n_b), kickrank=kickrank)
+def test_components(backend, n_A, n_b, kickrank):
+  als, *data = setup(backend, 'wide', problem_kwargs=dict(n_A=n_A, n_b=n_b), kickrank=kickrank)
   assert (als.M_A, als.M_b) == (n_A, n_b)
   als.run(n_iter=8, tol=1e-10)
   err = rel_err(als, *data)
@@ -219,47 +240,47 @@ def test_components(n_A, n_b, kickrank):
 
 @pytest.mark.parametrize('tree_type', ['pair', 'balanced', 'wide_leaf', 'wide'])
 @pytest.mark.parametrize('problem', PROBLEMS.keys())
-def test_exact_full_rank_without_kickrank(problem, tree_type):
+def test_exact_full_rank_without_kickrank(backend, problem, tree_type):
   # rinit exceeds all possible ranks (for these trees), so no rank adaption is needed.
   # The result is exact for any consistent projection, but test (conjugated) and
   # trial spaces mixed up in the projections of A and b break this for complex problems.
-  als, *data = setup(tree_type, problem, kickrank=0, rinit=9)
+  als, *data = setup(backend, tree_type, problem, kickrank=0, rinit=9)
   als.run(n_iter=5, tol=1e-12)
   assert rel_err(als, *data) < EXACT_TOL
 
 
 @pytest.mark.parametrize('kickrank', [1, 5])
-def test_kickrank_sizes(kickrank):
-  als, *data = setup('balanced', kickrank=kickrank)
+def test_kickrank_sizes(backend, kickrank):
+  als, *data = setup(backend, 'balanced', kickrank=kickrank)
   als.run(n_iter=8, tol=1e-10)
   assert rel_err(als, *data) < EXACT_TOL
 
 
-def test_truncation_tol():
+def test_truncation_tol(backend):
   # coarse tol truncates ranks, fine tol reaches the exact solution
-  als_coarse, *data = setup('balanced', kickrank=2)
+  als_coarse, *data = setup(backend, 'balanced', kickrank=2)
   als_coarse.run(n_iter=6, tol=1e-1)
-  als_fine, *_ = setup('balanced', kickrank=2)
+  als_fine, *_ = setup(backend, 'balanced', kickrank=2)
   als_fine.run(n_iter=6, tol=1e-10)
 
-  rank_coarse = sum(c.numel() for c in als_coarse.get_tensor().cores)
-  rank_fine = sum(c.numel() for c in als_fine.get_tensor().cores)
-  assert rank_coarse <= rank_fine
+  size_coarse = sum(_t(c).numel() for c in als_coarse.get_tensor().cores)
+  size_fine = sum(_t(c).numel() for c in als_fine.get_tensor().cores)
+  assert size_coarse <= size_fine
   assert rel_err(als_fine, *data) < EXACT_TOL
   assert rel_err(als_coarse, *data) < 0.5
 
 
-def test_float32():
-  als, *data = setup('balanced', problem_kwargs=dict(dtype=torch.float32), kickrank=2)
+def test_float32(backend):
+  als, *data = setup(backend, 'balanced', problem_kwargs=dict(dtype=torch.float32), kickrank=2)
   als.run(n_iter=6, tol=1e-5)
   u = als.get_tensor()
-  assert u.dtype == torch.float32
-  assert all(c.dtype == torch.float32 for c in u.cores)
+  assert u.dtype == backend.float32
+  assert core_dtypes(u) == {torch.float32}
   assert rel_err(als, *data) < 1e-3
 
 
-def test_repeated_run_continues(capsys):
-  als, *data = setup('wide', kickrank=2, verbose=2)
+def test_repeated_run_continues(backend, capsys):
+  als, *data = setup(backend, 'wide', kickrank=2, verbose=2)
   als.run(n_iter=2, tol=1e-10)
   als.run(n_iter=6, tol=1e-10)
   out = capsys.readouterr().out
@@ -268,12 +289,12 @@ def test_repeated_run_continues(capsys):
     assert f'= swp={i} finished' in out
   # verbose=2 prints per-node info
   assert 'leaf' in out and 'down' in out and 'up' in out
-  assert als.n_eval > 0
+  assert als.n_eval > 0 and als.iter_total == 8
   assert rel_err(als, *data) < EXACT_TOL
 
 
-def test_dx_decreases(capsys):
-  als, *_ = setup('balanced', kickrank=2, verbose=1)
+def test_dx_decreases(backend, capsys):
+  als, *_ = setup(backend, 'balanced', kickrank=2, verbose=1)
   als.run(n_iter=8, tol=1e-10)
   out = capsys.readouterr().out
   max_dx = [float(line.split('max_dx=')[1]) for line in out.splitlines() if 'max_dx=' in line]
@@ -281,20 +302,22 @@ def test_dx_decreases(capsys):
   assert max_dx[-1] < 1e-6 * max_dx[0]
 
 
-def test_inputs_not_modified():
+def test_inputs_not_modified(backend):
   tree = Tree.from_tupletree(TREES['wide'])
   problem, A_params, b_params = diffusion_problem(tree)
+  A_params = [backend.from_torch_tensor(x) for x in A_params]
+  b_params = [backend.from_torch_tensor(x) for x in b_params]
   A_copy, b_copy = copy.deepcopy(A_params), copy.deepcopy(b_params)
-  als = TreeALSCross(A_params, b_params, problem, kickrank=2)
+  als = backend.ALS(A_params, b_params, backend.wrap_problem(problem), kickrank=2)
   als.run(n_iter=2)
   for x, y in zip(A_params + b_params, A_copy + b_copy):
-    assert all(torch.equal(cx, cy) for cx, cy in zip(x.cores, y.cores))
+    assert all(torch.equal(_t(cx), _t(cy)) for cx, cy in zip(x.cores, y.cores))
     assert x.tree.root.n_children == y.tree.root.n_children
 
 
-def test_get_tensor_matches_internal_state():
+def test_get_tensor_matches_internal_state(backend):
   # get_tensor returns a copy, changing it does not affect the solver
-  als, *data = setup('balanced', kickrank=2)
+  als, *data = setup(backend, 'balanced', kickrank=2)
   als.run(n_iter=6, tol=1e-10)
   u = als.get_tensor()
   u.cores[u.tree.root] *= 0
@@ -302,26 +325,24 @@ def test_get_tensor_matches_internal_state():
 
 
 @pytest.mark.parametrize('kickrank', [0, 2])
-def test_complex_dtype(kickrank):
-  als, *data = setup('wide', 'helmholtz', kickrank=kickrank)
-  assert als.dtype == torch.complex128
+def test_complex_dtype(backend, kickrank):
+  als, *data = setup(backend, 'wide', 'helmholtz', kickrank=kickrank)
   als.run(n_iter=4, tol=1e-10)
   u = als.get_tensor()
-  assert u.dtype == torch.complex128
-  assert all(c.dtype == torch.complex128 for c in u.cores)
+  assert core_dtypes(u) == {torch.complex128}
   # the solution is genuinely complex
-  U = u.to_torch()
+  U = dense(u)
   assert torch.linalg.norm(U.imag) > 0.1 * torch.linalg.norm(U.real)
 
 
-def test_complex64():
-  als, *data = setup('balanced', 'helmholtz', problem_kwargs=dict(dtype=torch.complex64), kickrank=2)
+def test_complex64(backend):
+  als, *data = setup(backend, 'balanced', 'helmholtz', problem_kwargs=dict(dtype=torch.complex64), kickrank=2)
   als.run(n_iter=6, tol=1e-5)
-  assert als.get_tensor().dtype == torch.complex64
+  assert core_dtypes(als.get_tensor()) == {torch.complex64}
   assert rel_err(als, *data) < 1e-3
 
 
-def test_complex_real_part_problem_matches_real():
+def test_complex_real_part_problem_matches_real(backend):
   # a complex problem with real data must give the same result as the real problem
   tree = Tree.from_tupletree(TREES['wide'])
   problem, A_params, b_params = diffusion_problem(tree)
@@ -329,17 +350,17 @@ def test_complex_real_part_problem_matches_real():
   problem_c = AffineProblem([B.to(cdtype) for B in problem.B], [f.to(cdtype) for f in problem.f])
   A_params_c = [TreeBasedTensor(x, dtype=cdtype) for x in A_params]
   b_params_c = [TreeBasedTensor(x, dtype=cdtype) for x in b_params]
-  als = TreeALSCross(A_params, b_params, problem, rinit=9)
-  als_c = TreeALSCross(A_params_c, b_params_c, problem_c, rinit=9)
+  als = make_als(backend, problem, A_params, b_params, rinit=9)
+  als_c = make_als(backend, problem_c, A_params_c, b_params_c, rinit=9)
   als.run(n_iter=4, tol=1e-12)
   als_c.run(n_iter=4, tol=1e-12)
-  u, u_c = als.get_tensor().to_torch(), als_c.get_tensor().to_torch()
+  u, u_c = dense(als.get_tensor()), dense(als_c.get_tensor())
   assert torch.allclose(u_c.real, u, atol=1e-10 * u.abs().max())
   assert torch.allclose(u_c.imag, torch.zeros_like(u), atol=1e-10 * u.abs().max())
 
 
 @pytest.mark.parametrize('rinit', [0, 3])
-def test_helmholtz_low_rank_leaf(rinit):
+def test_helmholtz_low_rank_leaf(backend, rinit):
   # u depends on y_2 only through a complex phase of the RHS, so the leaf of dim 2 has
   # a rank below its mode size and a complex interpolation core (with full rank
   # leaves it is a real permutation matrix).
@@ -359,7 +380,7 @@ def test_helmholtz_low_rank_leaf(rinit):
   ]
   b_params = [_leaf_coeff(tree, pshape, 2, torch.exp(1j * torch.linspace(0., 2., 6, dtype=torch.float64)), dtype)]
 
-  als = TreeALSCross(A_params, b_params, problem, kickrank=kickrank, rinit=rinit)
+  als = make_als(backend, problem, A_params, b_params, kickrank=kickrank, rinit=rinit)
   als.run(n_iter=6, tol=1e-10)
   assert als.get_tensor().cores[tree.dim2leaf(2)].shape[-1] < pshape[1]
   assert rel_err(als, problem, A_params, b_params) < EXACT_TOL
@@ -368,12 +389,12 @@ def test_helmholtz_low_rank_leaf(rinit):
 def subtree_matrix(cores, node):
   """ Matrix (subtree mode sizes, rank) of the subtree below node, first child slowest. """
   if node.isleaf:
-    return cores[node]
+    return _t(cores[node])
   nc = node.n_children
   args = []
   for i, child in enumerate(node.children):
     args += [subtree_matrix(cores, child), [nc + 1 + i, i]]
-  args += [cores[node], list(range(nc + 1)), [nc + 1 + i for i in range(nc)] + [nc]]
+  args += [_t(cores[node]), list(range(nc + 1)), [nc + 1 + i for i in range(nc)] + [nc]]
   M = torch.einsum(*args)
   return M.reshape(-1, M.shape[-1])
 
@@ -384,7 +405,7 @@ def subtree_nodes(node):
 
 @pytest.mark.parametrize('kickrank, rinit, n_iter', [(0, 0, 2), (0, 2, 2), (1, 2, 1)])
 @pytest.mark.parametrize('tree_type', TREES.keys())
-def test_projections_conjugate_test_space(tree_type, kickrank, rinit, n_iter):
+def test_projections_conjugate_test_space(backend, tree_type, kickrank, rinit, n_iter):
   # After a sweep, UAU[k][node] and UF[k][node] of every node below the spatial core are
   # the Galerkin projections of the subtree below node, with the conjugated (test)
   # basis in the first slot:
@@ -392,7 +413,7 @@ def test_projections_conjugate_test_space(tree_type, kickrank, rinit, n_iter):
   #   UF[k][node][i, b] = sum_x conj(U[x, i]) b_k[x, b]
   # Mode size 5 with ranks <= 3 makes the interpolation cores complex, so that the
   # conjugation matters.
-  als, *_ = setup(tree_type, 'helmholtz', problem_kwargs=dict(ny=5), kickrank=kickrank, rinit=rinit)
+  als, *_ = setup(backend, tree_type, 'helmholtz', problem_kwargs=dict(ny=5), kickrank=kickrank, rinit=rinit)
   als.run(n_iter=n_iter, tol=1e-10)
 
   n_complex_basis = 0
@@ -402,11 +423,35 @@ def test_projections_conjugate_test_space(tree_type, kickrank, rinit, n_iter):
     for k in range(als.M_A):
       A = subtree_matrix(als.A_params[k].cores, node)
       expected = torch.einsum('xi,xj,xa->ija', U.conj(), U, A)
-      assert torch.allclose(als.UAU[k][node], expected, rtol=1e-8, atol=1e-10 * expected.abs().max())
+      assert torch.allclose(_t(als.UAU[k][node]), expected, rtol=1e-8, atol=1e-10 * expected.abs().max())
     for k in range(als.M_b):
       b = subtree_matrix(als.b_params[k].cores, node)
       expected = U.conj().T @ b
-      assert torch.allclose(als.UF[k][node], expected, rtol=1e-8, atol=1e-10 * expected.abs().max())
+      assert torch.allclose(_t(als.UF[k][node]), expected, rtol=1e-8, atol=1e-10 * expected.abs().max())
 
   # otherwise the test is not sensitive to the conjugation
   assert n_complex_basis >= 2
+
+
+def _run_with_seed(backend, seed, rinit):
+  als, *_ = setup(backend, 'balanced', kickrank=2, rinit=rinit, seed=seed)
+  initial = [_t(c).clone() for c in als.u.cores]
+  als.run(n_iter=2, tol=1e-10)
+  return initial, [_t(c) for c in als.get_tensor().cores]
+
+def _equal(cores1, cores2):
+  return all(c1.shape == c2.shape and torch.equal(c1, c2) for c1, c2 in zip(cores1, cores2))
+
+@pytest.mark.parametrize('rinit', [0, 3])
+def test_seed_reproducible(backend, rinit):
+  initial1, final1 = _run_with_seed(backend, 1, rinit)
+  initial2, final2 = _run_with_seed(backend, 1, rinit)
+  initial3, _ = _run_with_seed(backend, 2, rinit)
+  assert _equal(initial1, initial2) and _equal(final1, final2)
+  assert not _equal(initial1, initial3)
+
+@pytest.mark.parametrize('rinit', [0, 3])
+def test_no_seed_random(backend, rinit):
+  initial1, _ = _run_with_seed(backend, None, rinit)
+  initial2, _ = _run_with_seed(backend, None, rinit)
+  assert not _equal(initial1, initial2)

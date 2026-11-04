@@ -3,8 +3,6 @@ import numpy as np
 import copy
 import torch
 from util.maxvol_torch import rect_maxvol
-from tt import set_backend as tt_set_backend
-tt_set_backend('torch')
 
 
 ###### Borrows from tensap, keep in mind if publishing! #####
