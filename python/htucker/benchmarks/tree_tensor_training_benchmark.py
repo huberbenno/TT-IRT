@@ -43,23 +43,23 @@ DEFAULT_GRID = dict(
 def peak_rss_MB():
   return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
-def run(args: ARGS_tree_tensor_training):
-  """ Train, save the stats and return them. """
+def run(args: ARGS_tree_tensor_training, data_dir: str = DATA_DIR):
+  """ Train, save the stats (to data/<data_dir>) and return them. """
   stats = train(args)
   stats['peak_rss_MB'] = peak_rss_MB()
 
-  fn = save_stats(args, stats, DATA_DIR, prefix='stats_ttt')
+  fn = save_stats(args, stats, data_dir, prefix='stats_ttt')
   if args.verbose: print(f'Saved stats to: {fn}', flush=True)
   return stats
 
-def _worker(args, queue):
-  queue.put(run(args))
+def _worker(args, data_dir, queue):
+  queue.put(run(args, data_dir))
 
-def run_isolated(args: ARGS_tree_tensor_training):
+def run_isolated(args: ARGS_tree_tensor_training, data_dir: str = DATA_DIR):
   """ Run in a fresh process so that the peak memory is measured per configuration. """
   ctx = mp.get_context('spawn')
   queue = ctx.Queue()
-  p = ctx.Process(target=_worker, args=(args, queue))
+  p = ctx.Process(target=_worker, args=(args, data_dir, queue))
   p.start()
   # get before join, the child only exits once its result is consumed
   stats = None
@@ -156,12 +156,19 @@ def parse_bool(s: str) -> bool:
   if s.lower() in ('0', 'false', 'no'): return False
   raise argparse.ArgumentTypeError(f'not a bool: {s}')
 
+def parse_int_tuple(s: str) -> tuple:
+  return tuple(int(x) for x in s.split(','))
+
+def field_parser(f):
+  """ argparse type of a dataclass field: bools as parse_bool, tuples as comma separated ints. """
+  return {bool: parse_bool, tuple: parse_int_tuple}.get(f.type, f.type)
+
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument('--single', action='store_true', help='run one config instead of the grid')
   for f in fields(ARGS_tree_tensor_training):
-    parser.add_argument(f'--{f.name}', type=parse_bool if f.type is bool else f.type, default=None,
+    parser.add_argument(f'--{f.name}', type=field_parser(f), default=None,
                         help=f'default {getattr(BASE_ARGS, f.name)}')
   cli = vars(parser.parse_args())
   single = cli.pop('single')

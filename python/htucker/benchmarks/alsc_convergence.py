@@ -59,15 +59,15 @@ def alsc_convergence(args : ARGS_alsc_convergence):
   }.get(args.tree_type, {})
   tree = Tree.from_tupletree(zero_root_tupletree(args.n_param, args.tree_type, **tree_kwargs))
 
-  stats['sacking_index'] = np.sum(np.array(tree.get_leaf_depths()[1:])-1)
-  colles_ind = 0
+  stats['sackin_index'] = np.sum(np.array(tree.get_leaf_depths()[1:])-1)
+  colless_ind = 0
   subtree_dims = tree.get_subtree_dims()
   for node in tree.node_list:
     if node.isroot: continue
     if not node.isleaf and node.n_children == 2:
-      colles_ind += abs(len(subtree_dims[node.children[0]]) - len(subtree_dims[node.children[1]]))
+      colless_ind += abs(len(subtree_dims[node.children[0]]) - len(subtree_dims[node.children[1]]))
 
-  stats['colles_index'] = colles_ind
+  stats['colless_index'] = colless_ind
 
   if args.verbose: print('Computing coefficient TT approximation')
   C_a = TreeBasedTensor.randn(tree, (args.Nx,) + param_shape, args.Ny, dtype=torch.float64, seed=args.rng_seed)

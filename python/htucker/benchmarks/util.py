@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 import numpy as np
 import torch
 from dataclasses import asdict
@@ -12,9 +13,13 @@ class NumpyEncoder(json.JSONEncoder):
       return int(obj)
     return super().default(obj)
 
+def args_hash(args) -> str:
+  """ Hash of a dataclass of arguments, stable across processes (unlike hash(), which salts strings). """
+  return hashlib.sha1(json.dumps(asdict(args), sort_keys=True, cls=NumpyEncoder).encode()).hexdigest()[:16].upper()
+
 def save_stats(args, stats, subdir, prefix='stats'):
   """ Save args and stats to data/<subdir>/<prefix>_<hash of args>.json, the path is also stored in stats['file']. """
-  fn = f'data/{subdir}/{prefix}_{hash(args):X}.json'
+  fn = f'data/{subdir}/{prefix}_{args_hash(args)}.json'
   os.makedirs(os.path.dirname(fn), exist_ok=True)
   stats['file'] = fn
   with open(fn, mode='w') as file:
