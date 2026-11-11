@@ -203,14 +203,15 @@ def setup_coeff(backend, coeff_target, seed=0):
 
 def test_kickrank0_false_convergence(backend, coeff_target, capsys):
   cross, x, X, eval_f = setup_coeff(backend, coeff_target)
-  cross.run(eval_f, n_iter=10, eps=1e-4, kickrank=0, verbose=1)
+  # the truncation of the sweeps reduces the ranks to the exactly low rank blocks
+  cross.run(eval_f, n_iter=10, eps=1e-4, svd_tol=1e-5, kickrank=0, verbose=1)
   assert n_sweeps(capsys) < 10
   assert cross.max_dx < 1e-4
   assert rel_err(x, X) > 1e-2
 
 def test_n_test_detects_false_convergence(backend, coeff_target, capsys):
   cross, x, X, eval_f = setup_coeff(backend, coeff_target)
-  cross.run(eval_f, n_iter=10, eps=1e-4, kickrank=0, verbose=1, n_test=200)
+  cross.run(eval_f, n_iter=10, eps=1e-4, svd_tol=1e-5, kickrank=0, verbose=1, n_test=200)
   out = capsys.readouterr().out
   assert out.count('swp:') == 10
   assert 'test_err=' in out
@@ -278,3 +279,49 @@ def test_n_test_reset_per_run(backend):
   # without n_test there is no estimate
   cross.run(eval_f, n_iter=1, eps=0., force_init=False)
   assert cross.test_err is None and cross.test_indices.shape[0] == 0
+
+
+# ---------- truncation of the sweeps and max_dx ----------
+
+@pytest.mark.parametrize('tree_type', TREES)
+def test_svd_tol0_qr_matches_svd(backend, tree_type):
+  # svd_tol = 0 factorizes by QR, a tiny svd_tol by an SVD that truncates nothing
+  # (its tolerance squared underflows): the same ranks, evaluations and approximation
+  results = []
+  for svd_tol in [0., 1e-300]:
+    cross, x, X, eval_f = setup_cross(backend, tree_type, target=smooth_target)
+    cross.run(eval_f, n_iter=3, svd_tol=svd_tol)
+    results += [([c.shape[-1] for c in x.cores], cross.n_eval, rel_err(x, X))]
+  (ranks_qr, n_qr, err_qr), (ranks_svd, n_svd, err_svd) = results
+  assert ranks_qr == ranks_svd
+  assert n_qr == n_svd
+  assert err_qr == pytest.approx(err_svd, rel=1e-3, abs=1e-10)
+
+def test_svd_tol_truncates(backend):
+  ranks = {}
+  for svd_tol in [0., 1e-3]:
+    cross, x, X, eval_f = setup_cross(backend, 'balanced', target=smooth_target)
+    cross.run(eval_f, n_iter=3, svd_tol=svd_tol)
+    ranks[svd_tol] = [c.shape[-1] for c in x.cores]
+  assert all(a <= b for a, b in zip(ranks[1e-3], ranks[0.]))
+  assert sum(ranks[1e-3]) < sum(ranks[0.])
+
+def test_max_dx_relative(backend):
+  # the change of the sampled cores is relative: scaling the target leaves max_dx unchanged
+  max_dx = []
+  for scale in [1., 1e3]:
+    cross, x, X, eval_f = setup_cross(backend, 'balanced', target=smooth_target)
+    cross.run(lambda ind: scale * eval_f(ind), n_iter=2)
+    max_dx += [float(cross.max_dx)]
+  assert max_dx[0] > 0
+  assert max_dx[1] == pytest.approx(max_dx[0], rel=1e-6)
+
+@pytest.mark.parametrize('dtype', ['float64', 'float32'])
+def test_svd_tol_default_dtype(backend, dtype):
+  # the default truncation is SVD_TOL_FACTOR times the machine epsilon of the dtype
+  dt = getattr(backend, dtype)
+  cross, x, X, eval_f = setup_cross(backend, 'balanced', target=smooth_target, dtype=dt)
+  cross.run(eval_f, n_iter=8)
+  machine_eps = np.finfo(np.float64 if dtype == 'float64' else np.float32).eps
+  assert cross._svd_tol == pytest.approx(10 * machine_eps)
+  assert rel_err(x, X) < (1e-10 if dtype == 'float64' else 1e-4)

@@ -4,6 +4,10 @@ from tt.maxvol import rect_maxvol
 
 from tree_tensor.tree_tensor import TreeBasedTensor, TreeNode, svd_cut
 
+# default truncation of the sweeps: this factor times the machine epsilon of the
+# tensor's dtype per factorization, about the round-off level of the sampled cores
+SVD_TOL_FACTOR = 10.
+
 def RMS(x, **kwargs):
   return np.sqrt(np.mean(np.square(x), **kwargs))
 
@@ -38,6 +42,7 @@ class TreeCross:
       verbose: bool|int=False,
       random_kick: int=0,
       n_test: int=0,
+      svd_tol: float|None=None,
       ) -> None:
     """
     Run the cross approximation.
@@ -50,7 +55,8 @@ class TreeCross:
     n_iter: int, optional
       Number of iterations to run. Default is 1.
     eps: float, optional
-      Tolerance for rank truncation. Default is 0 (no truncation).
+      Stopping tolerance: the sweeps stop once max_dx < eps (and test_err < eps
+      with n_test > 0). Default is 0 (no early stopping).
     kickrank: int, optional
       Number of ranks to add in each step, chosen greedily by maxvol.
     force_init: bool, optional
@@ -65,15 +71,29 @@ class TreeCross:
     n_test: int, optional
       If positive, the target is evaluated at n_test new random indices after
       every sweep to test convergence. Default is 0.
+    svd_tol: float, optional
+      Truncation tolerance of the sweep: every factorization of a core is a
+      truncated SVD with relative tolerance svd_tol / sqrt(ndim) (Frobenius
+      norm, relative to the sampled core, not to the tensor). 0: no
+      truncation, the factorizations are QR decompositions, which is unstable
+      once a sampled core is numerically rank deficient. Default: the relative
+      tolerance SVD_TOL_FACTOR times the machine epsilon of the tensor's dtype
+      per factorization, which only removes round-off directions.
+
+    max_dx is the largest relative change of a sampled core in the last sweep,
+    RMS(new - old) / RMS(new) with the new samples and the current
+    approximation at the same indices.
     """
     if self.indexset_list is None or force_init:
       self._init_cross()
 
     self.max_dx = 0
-    eps_extra = 1e-1
 
     # settings of the sweep, eval_f is passed explicitly so that it is not kept alive
-    self._svd_tol = eps_extra*eps/np.sqrt(self.tensor.ndim)
+    if svd_tol is None:
+      self._svd_tol = SVD_TOL_FACTOR * float(np.finfo(self.tensor.dtype).eps)
+    else:
+      self._svd_tol = svd_tol / np.sqrt(self.tensor.ndim)
     self._kickrank = kickrank
     self._random_kick = random_kick
     self._resample = resample
@@ -123,8 +143,7 @@ class TreeCross:
       )
       eval = self._sample(node, indexset[:, order], (n, r), eval_f)
 
-      u,s,v = svd_cut(eval, tol=self._svd_tol, norm='fro')
-      r = np.diag(s) @ v
+      u, r = self._factor(eval)
       ind, C = self._select_rows(u, self._kickrank, self._random_kick)
       qmax = u[ind]
       self.tensor.cores[node] = C
@@ -145,8 +164,7 @@ class TreeCross:
         core = np.moveaxis(core, i, -1)
         old_shape = core.shape[:-1]
         core = core.reshape(-1, core.shape[-1])
-        u,s,v = svd_cut(core, tol=self._svd_tol, norm='fro')
-        r = np.diag(s) @ v
+        u, r = self._factor(core)
         ind, C = self._select_rows(u, self._kickrank, self._random_kick)
         qmax = u[ind]
         core = C
@@ -180,8 +198,7 @@ class TreeCross:
 
         old_shape = core.shape[:-1]
         core = core.reshape(-1, core.shape[-1])
-        u,s,v = svd_cut(core, tol=self._svd_tol, norm='fro')
-        r = np.diag(s) @ v
+        u, r = self._factor(core)
         ind, C = self._select_rows(u, self._kickrank, self._random_kick)
         qmax = u[ind]
         core = C.reshape(old_shape + (-1,))
@@ -216,12 +233,24 @@ class TreeCross:
     self.n_eval += eval.shape[0]
     core = eval.reshape(shape)
 
-    # compute local residual
+    # relative change of the core at the sampled indices
     res = RMS(core - self.tensor.cores[node].reshape(shape))
+    scale = RMS(core)
+    res = (res / scale if scale > 0 else res)
     self.max_dx = max(res, self.max_dx)
     if self._verbose > 1: print(f'node {node.id}, res = {res:.2e}')
 
     return core
+
+  def _factor(self, A):
+    """
+    A = u r with orthonormal u: truncated SVD with the tolerance of the sweep
+    (u the left singular vectors, r = diag(s) v), QR without truncation.
+    """
+    if self._svd_tol > 0:
+      u, s, v = svd_cut(A, tol=self._svd_tol, norm='fro')
+      return u, np.diag(s) @ v
+    return np.linalg.qr(A)
 
   def _select_rows(self, u, kickrank, random_kick):
     """
