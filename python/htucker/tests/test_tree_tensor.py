@@ -315,6 +315,51 @@ def test_round_excessive_rank(backend, tree_type):
   x.round(0.)
   assert_dense(x, X, rtol=1e-10, atol=1e-10 * np.linalg.norm(X))
 
+def sum_of_rank1(backend, tree, n_terms=8, seed=0):
+  """ Tensor with a decaying spectrum in a non-orthogonal representation: rank-1 terms with weights 2^-k. """
+  x = None
+  for k in range(n_terms):
+    t = make_random(backend, tree, 1, seed=seed + k)
+    t.cores[tree.root] = t.cores[tree.root] * 2.**-k
+    x = t if x is None else x + t
+  return x
+
+def regauge(backend, x, cond, seed=0):
+  """ The same tensor with an invertible matrix (condition cond) on every edge and its inverse in the parent. """
+  rng = np.random.default_rng(seed)
+  x = backend.TT(x)
+  for node in x.tree.node_list:
+    if node.isroot: continue
+    r = x.cores[node].shape[-1]
+    U, _ = np.linalg.qr(rng.standard_normal((r, r)))
+    G = U @ np.diag(np.logspace(0, np.log10(cond), r)) @ U.T
+    core, parent = np.asarray(x.cores[node]), np.asarray(x.cores[node.parent])
+    x.cores[node] = backend.from_numpy(np.tensordot(core, G, axes=(-1, 0)))
+    i = node.child_ind
+    x.cores[node.parent] = backend.from_numpy(np.moveaxis(np.tensordot(np.linalg.inv(G), parent, axes=(1, i)), 0, i))
+  return x
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+@pytest.mark.parametrize('tol', [1e-1, 1e-2, 1e-3])
+def test_round_error_within_tol(backend, tree_type, tol):
+  # the old round (no orthogonalization) exceeded tol by up to 20x on such tensors
+  x = sum_of_rank1(backend, Tree.from_tupletree(TREES[tree_type]))
+  X = x.numpy()
+  x.round(tol)
+  assert np.linalg.norm(x.numpy() - X) <= tol * np.linalg.norm(X) * (1 + 1e-10)
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_round_gauge_invariant(backend, tree_type):
+  # rounding the same tensor in another gauge gives the same ranks and the same tensor
+  x = sum_of_rank1(backend, Tree.from_tupletree(TREES[tree_type]))
+  y = regauge(backend, x, cond=1e2)
+  X = x.numpy()
+  assert np.allclose(y.numpy(), X, rtol=1e-10, atol=1e-10 * np.linalg.norm(X))
+  x.round(1e-2)
+  y.round(1e-2)
+  assert ranks(x) == ranks(y)
+  assert_dense(y, x.numpy(), rtol=1e-8, atol=1e-8 * np.linalg.norm(X))
+
 
 # ---------- random init ----------
 

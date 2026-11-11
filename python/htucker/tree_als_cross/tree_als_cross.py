@@ -60,6 +60,11 @@ class TreeALSCross:
     Number of solves of the full spatial problem.
   iter_total: int
     Number of sweeps done.
+  history: list[dict]
+    Per sweep: sweep (index), n_eval (total solves after it), max_dx (maximal relative
+    core change) and change (relative change of the solution, see run, None if not computed).
+  stopped: bool
+    Whether the last run stopped by its stopping criterion.
   """
 
   def __init__(
@@ -82,6 +87,9 @@ class TreeALSCross:
     self.kickrank = kickrank
     self.n_eval = 0
     self.iter_total = 0
+    self.history = [] # one dict per sweep: sweep, n_eval, max_dx, change (None if not computed)
+    self.stopped = False
+    self._prev = None # (solution, squared norm) after the last sweep with tracked change
 
     self.dtype = A_params[0].dtype
     assert all(A_param.dtype == self.dtype for A_param in A_params), 'Incompatible data types.'
@@ -149,7 +157,7 @@ class TreeALSCross:
     if self.verbose > 0:
       print('Init finished')
 
-  def run(self, n_iter=1, tol=1e-3):
+  def run(self, n_iter=1, tol=1e-3, stop_tol=None, track_change=False):
     """
     Run sweeps over the tree, starting at the spatial core. Can be called repeatedly
     to continue the iteration.
@@ -157,15 +165,29 @@ class TreeALSCross:
     Parameters
     ----------
     n_iter: int, optional
-      Number of sweeps. All sweeps are done, there is no stopping criterion.
+      Number of sweeps, the maximal number with stop_tol.
     tol: float, optional
       Relative truncation tolerance, split evenly over the cores
       (tol / sqrt(order) for each truncation).
+    stop_tol: float, optional
+      Stop after the first sweep in which the relative change of the solution
+      ||u_k - u_{k-1}|| / ||u_k|| (Frobenius norm over all entries) is at most stop_tol,
+      u_{k-1} being the solution before the sweep. The change is computed from inner
+      products of the tree tensors, so it needs no solves. Default: no stopping criterion.
+    track_change: bool, optional
+      Compute the change after every sweep (into history) also without stop_tol.
+
+    Sets stopped (True if the stopping criterion was met) and appends one entry per sweep
+    to history.
     """
     self.tol = tol
     self.max_dx = 0
+    self.stopped = False
+    compute_change = stop_tol is not None or track_change
 
     for iteration in range(self.iter_total, self.iter_total + n_iter):
+      if compute_change and self._prev is None:
+        self._prev = self._with_norm(self.get_tensor())
       if self.verbose > 0:
         print(f'= swp={iteration}')
       #### special core
@@ -258,11 +280,46 @@ class TreeALSCross:
       ## traverse tree
       self._als_interior_worker(self.root_node)
 
+      change = self._change() if compute_change else None
+      if not compute_change: self._prev = None # the next tracked sweep compares with the solution before it
+      self.history.append({'sweep': iteration, 'n_eval': self.n_eval, 'max_dx': float(self.max_dx), 'change': change})
       if self.verbose > 0:
-        print(f'= swp={iteration} finished, max_dx={self.max_dx:.2e}')
+        print(f'= swp={iteration} finished, max_dx={self.max_dx:.2e}' + ('' if change is None else f', change={change:.2e}'))
       self.max_dx = 0
+      self.iter_total += 1
 
-    self.iter_total += n_iter
+      if stop_tol is not None and change <= stop_tol:
+        self.stopped = True
+        if self.verbose > 0: print(f'= stopped: change {change:.2e} <= {stop_tol:.2e}')
+        break
+
+  @staticmethod
+  def _inner(x: TreeBasedTensor, y: TreeBasedTensor) -> float:
+    """
+    Real part of sum(conj(x) * y) over all entries. Every subtree is contracted to an (r_x, r_y) matrix,
+    which is applied to the child axis of the core of y first, so a node costs about r^(k+2) for k children
+    (TreeBasedTensor.dot forms the Kronecker product of the cores, r^(2k+2) entries).
+    """
+    def worker(node):
+      cx, cy = x.cores[node].conj(), y.cores[node]
+      if node.isleaf:
+        return cx.T @ cy
+      k = node.n_children
+      for i, child in enumerate(node.children):
+        M = worker(child)
+        cy = np.moveaxis(np.tensordot(M, cy, axes=([1], [i])), 0, i)
+      return np.tensordot(cx, cy, axes=(list(range(k)), list(range(k))))
+    return float(np.real(worker(x.tree.root)).sum())
+
+  def _with_norm(self, u):
+    return u, self._inner(u, u)
+
+  def _change(self):
+    """ Relative change ||u - u_prev|| / ||u|| of the solution since the last tracked sweep, which becomes u_prev. """
+    (u, uu), (v, vv) = self._with_norm(self.get_tensor()), self._prev
+    self._prev = (u, uu)
+    if uu == 0: return float('inf')
+    return float(np.sqrt(max(uu + vv - 2 * self._inner(u, v), 0.) / uu))
 
   def get_tensor(self):
     """

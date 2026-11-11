@@ -376,13 +376,31 @@ class TreeBasedTensor:
   
   def round(self, tol:float = 0.) -> TreeBasedTensor:
     """
-    Truncate tensor ranks to specified tolerance using SVD.
+    Truncate the ranks to a relative tolerance (in place).
+
+    The tensor is orthogonalized first and every edge is truncated once, so
+    that ||u - round(u)|| <= tol ||u|| (Frobenius norm).
+
+    Parameters
+    ----------
+    tol: float, optional
+      Relative tolerance. Default 0 (no truncation).
+
+    Returns
+    -------
+    tensor: TreeBasedTensor
+      The rounded tensor (self).
     """
+    # orthonormal form, the root R factor holds the norm
+    root = self.tree.root
+    r = self._orth_subtree(root)
+    self.cores[root] = self.cores[root] * r[0, 0]
+    tol_edge = tol / np.sqrt(max(self.tree.n_nodes - 1, 1))
 
     def worker_trunc(node):
       core = self.cores[node]
       if node.isleaf:
-        u,s,v = svd_cut(core, tol=tol/np.sqrt(self.ndim), norm='fro')
+        u,s,v = svd_cut(core, tol=tol_edge, norm='fro')
         self.cores[node] = u
         return np.diag(s) @ v
       else:
@@ -390,12 +408,12 @@ class TreeBasedTensor:
           r_c = core.shape[i]
           core = np.swapaxes(core, -1, i)
           old_shape = core.shape[:-1]
-          core = core.reshape(-1, r_c)
-          u,s,v = svd_cut(core, tol=tol/np.sqrt(self.ndim), norm='fro')
-          core = u
-          self.cores[child] = np.tensordot(self.cores[child], np.diag(s) @ v, axes=(-1,-1))
-          r = worker_trunc(child)
-          core = np.tensordot(core, r, axes=(-1,-1))
+          # downward: move the orthogonality center into the child
+          q, r = np.linalg.qr(core.reshape(-1, r_c))
+          self.cores[child] = np.tensordot(self.cores[child], r, axes=(-1,-1))
+          # upward: the child returns s v of its truncated edge
+          sv = worker_trunc(child)
+          core = np.tensordot(q, sv, axes=(-1,-1))
           core = core.reshape(old_shape + (-1,))
           core = np.swapaxes(core, -1, i)
           self.cores[node] = core
@@ -403,12 +421,12 @@ class TreeBasedTensor:
         if not node.isroot:
           old_shape = core.shape[:-1]
           core = core.reshape(-1, core.shape[-1])
-          u,s,v = svd_cut(core, tol=tol/np.sqrt(self.ndim), norm='fro')
+          u,s,v = svd_cut(core, tol=tol_edge, norm='fro')
           core = u.reshape(old_shape + (-1,))
           self.cores[node] = core
           return np.diag(s) @ v
 
-    worker_trunc(self.tree.root)
+    worker_trunc(root)
 
     return self
 
