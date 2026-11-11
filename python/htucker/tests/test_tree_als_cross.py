@@ -455,3 +455,41 @@ def test_no_seed_random(backend, rinit):
   initial1, _ = _run_with_seed(backend, None, rinit)
   initial2, _ = _run_with_seed(backend, None, rinit)
   assert not _equal(initial1, initial2)
+
+
+@pytest.mark.parametrize('problem', ['diffusion', 'helmholtz'])
+def test_change_matches_dense(backend, problem):
+  """ The tracked change is ||u_k - u_{k-1}|| / ||u_k|| of the dense solutions (complex: with conjugation). """
+  als, *_ = setup(backend, 'wide', problem, kickrank=2)
+  prev = dense(als.get_tensor())
+  for _ in range(4):
+    als.run(n_iter=1, tol=1e-10, track_change=True)
+    u = dense(als.get_tensor())
+    ref = (torch.linalg.norm(u - prev) / torch.linalg.norm(u)).item()
+    assert als.history[-1]['change'] == pytest.approx(ref, rel=1e-6, abs=1e-7)
+    prev = u
+
+def test_stop_tol_stops_when_converged(backend):
+  als, *data = setup(backend, 'balanced', kickrank=2)
+  als.run(n_iter=30, tol=1e-10, stop_tol=1e-6)
+  changes = [h['change'] for h in als.history]
+  assert als.stopped and als.iter_total == len(als.history) < 30
+  assert changes[-1] <= 1e-6 and all(c > 1e-6 for c in changes[:-1])
+  assert rel_err(als, *data) < 1e-5
+  # n_eval in the history is the total after every sweep
+  assert als.history[-1]['n_eval'] == als.n_eval and [h['sweep'] for h in als.history] == list(range(als.iter_total))
+
+def test_no_stopping_by_default(backend):
+  als, *_ = setup(backend, 'balanced', kickrank=2)
+  als.run(n_iter=3, tol=1e-10)
+  assert not als.stopped and als.iter_total == 3
+  assert [h['change'] for h in als.history] == [None] * 3
+
+def test_change_after_untracked_sweeps(backend):
+  # the first tracked sweep after untracked ones compares with the solution before it
+  als, *_ = setup(backend, 'wide', kickrank=2)
+  als.run(n_iter=2, tol=1e-10)
+  before = dense(als.get_tensor())
+  als.run(n_iter=1, tol=1e-10, track_change=True)
+  u = dense(als.get_tensor())
+  assert als.history[-1]['change'] == pytest.approx((torch.linalg.norm(u - before) / torch.linalg.norm(u)).item(), rel=1e-6, abs=1e-7)

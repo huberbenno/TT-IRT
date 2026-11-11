@@ -293,33 +293,15 @@ class TreeALSCross:
         if self.verbose > 0: print(f'= stopped: change {change:.2e} <= {stop_tol:.2e}')
         break
 
-  @staticmethod
-  def _inner(x: TreeBasedTensor, y: TreeBasedTensor) -> float:
-    """
-    Real part of sum(conj(x) * y) over all entries. Every subtree is contracted to an (r_x, r_y) matrix,
-    which is applied to the child axis of the core of y first, so a node costs about r^(k+2) for k children
-    (TreeBasedTensor.dot forms the Kronecker product of the cores, r^(2k+2) entries).
-    """
-    def worker(node):
-      cx, cy = x.cores[node].conj(), y.cores[node]
-      if node.isleaf:
-        return cx.T @ cy
-      k = node.n_children
-      for i, child in enumerate(node.children):
-        M = worker(child)
-        cy = np.moveaxis(np.tensordot(M, cy, axes=([1], [i])), 0, i)
-      return np.tensordot(cx, cy, axes=(list(range(k)), list(range(k))))
-    return float(np.real(worker(x.tree.root)).sum())
-
   def _with_norm(self, u):
-    return u, self._inner(u, u)
+    return u, float(np.real(u.inner(u)))
 
   def _change(self):
     """ Relative change ||u - u_prev|| / ||u|| of the solution since the last tracked sweep, which becomes u_prev. """
     (u, uu), (v, vv) = self._with_norm(self.get_tensor()), self._prev
     self._prev = (u, uu)
     if uu == 0: return float('inf')
-    return float(np.sqrt(max(uu + vv - 2 * self._inner(u, v), 0.) / uu))
+    return float(np.sqrt(max(uu + vv - 2 * float(np.real(u.inner(v))), 0.) / uu))
 
   def get_tensor(self):
     """
