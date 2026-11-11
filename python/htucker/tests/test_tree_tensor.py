@@ -636,3 +636,15 @@ def test_inner_complex(backend, tree_type):
 def test_from_tuple_of_cores(backend):
   x, _ = operands(backend, 'balanced-01234')
   assert_dense(backend.TT(tuple(x.cores), x.tree), x.numpy(), rtol=0, atol=0)
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_orthogonalize(backend, tree_type):
+  x = make_random(backend, Tree.from_tupletree(TREES[tree_type]), 3, seed=0)
+  X = x.numpy()
+  assert x.orthogonalize() is x
+  assert_dense(x, X, rtol=1e-10, atol=1e-10 * np.linalg.norm(X))
+  for node in x.tree.node_list:
+    if node.isroot: continue
+    core = np.asarray(x.cores[node]).reshape(-1, x.cores[node].shape[-1])
+    assert np.allclose(core.T @ core, np.eye(core.shape[1]), atol=1e-12)
+  assert np.linalg.norm(np.asarray(x.cores[x.tree.root])) == pytest.approx(np.linalg.norm(X), rel=1e-12)

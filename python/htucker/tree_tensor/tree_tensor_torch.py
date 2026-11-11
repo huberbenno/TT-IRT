@@ -486,9 +486,8 @@ class TreeBasedTensor:
         for node in self.tree.node_list: self.cores[node] = self.cores[node].to(device)
 
       # orthonormal form, the root R factor holds the norm
+      self.orthogonalize()
       root = self.tree.root
-      r = self._orth_subtree(root)
-      self.cores[root] = self.cores[root] * r.reshape(())
 
       def truncate(node, M):
         """ Truncated SVD of the matricization M of the edge above node: U and s v. """
@@ -534,6 +533,23 @@ class TreeBasedTensor:
     """
     for core in self.cores:
       core.requires_grad_(requires_grad)
+
+  def orthogonalize(self) -> TreeBasedTensor:
+    """
+    Orthogonal form of the tensor (in place): every core but the root's is
+    orthonormal as a matrix with the edge to its parent as columns, the root
+    core holds the norm. The ranks shrink where they exceed the product of
+    the ranks below (reduced QR).
+
+    Returns
+    -------
+    tensor: TreeBasedTensor
+      The tensor (self).
+    """
+    root = self.tree.root
+    r = self._orth_subtree(root)
+    self.cores[root] = self.cores[root] * r.reshape(())
+    return self
 
   def _orth_subtree(self, node : TreeNode):
     core = self.cores[node]
