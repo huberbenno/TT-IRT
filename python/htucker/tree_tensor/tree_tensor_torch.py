@@ -50,6 +50,12 @@ def svd_cut_torch(A, tol, alpha=0., norm=2):
     return U[:,:rank], S_reg[:rank], V[:rank]
 
 
+def _fro_tol_rank(s, tol):
+  """ Smallest rank whose discarded singular values have norm <= tol ||s||. """
+  s2 = np.cumsum(np.square(s.numpy(force=True)[::-1]))
+  return int(s2.shape[0] - np.searchsorted(s2, s2[-1] * tol**2, side='left'))
+
+
 def _kron_core(core1, core2):
   """
   Kronecker product of two cores along every axis: each axis of the result has size
@@ -344,88 +350,183 @@ class TreeBasedTensor:
     neg.cores[neg.tree.root] *= -1
     return neg
 
-  def dot(self, other):
+  def _contract(self, other, conj: bool):
     """
-    Compute the dot product with another tensor.
-
-    Parameters
-    ----------
-    other: TreeTensor
-      Must have same tree and shape.
+    Sum of c(self) * other over all entries, c = conj or the identity. Every
+    subtree is contracted to an (r_self, r_other) matrix, which is applied to
+    the child axis of the core of other first, so a node with k children costs
+    about r^(k+2). Returns the (1, 1) matrix of the root.
     """
     assert self.tree == other.tree, 'Trees not compatible.'
     assert self.shape == other.shape, f'Shape mismatch: {self.shape} != {other.shape}'
 
     def worker(node):
-      core1 = self.cores[node]
-      core2 = other.cores[node]
+      cx, cy = self.cores[node], other.cores[node]
+      if conj: cx = cx.conj()
       if node.isleaf:
-        return torch.einsum('ai,aj->ij', core1, core2).ravel()
-
-      else:
-        core = _kron_core(core1, core2)
-
-        for child in node.children:
-          partial = worker(child)
-          core = torch.tensordot(partial, core, dims=((0,),(0,)))
-
-        return core
+        return cx.T @ cy
+      for i, child in enumerate(node.children):
+        cy = torch.movedim(torch.tensordot(worker(child), cy, dims=([1], [i])), 0, i)
+      k = node.n_children
+      return torch.tensordot(cx, cy, dims=(list(range(k)), list(range(k))))
 
     return worker(self.tree.root)
 
+  def inner(self, other):
+    """
+    Inner product sum(conj(self) * other) over all entries.
+
+    Parameters
+    ----------
+    other: TreeBasedTensor
+      Same tree and shape, the ranks may differ.
+
+    Returns
+    -------
+    value: torch.Tensor
+      0-d tensor (complex for complex tensors).
+    """
+    return self._contract(other, conj=True).sum()
+
+  def dot(self, other):
+    """
+    Bilinear product sum(self * other) over all entries (no conjugation, see
+    inner).
+
+    Parameters
+    ----------
+    other: TreeBasedTensor
+      Same tree and shape, the ranks may differ.
+
+    Returns
+    -------
+    value: array of shape (1,)
+    """
+    return self._contract(other, conj=False).reshape(-1)
+
   def norm(self):
     """
-    Compute the Frobenius norm of the tensor.
+    Frobenius norm of the tensor, sqrt(inner(self, self)).
     """
-    return torch.sqrt(self.dot(self))[0]
+    return torch.sqrt(torch.real(self.inner(self)))
 
-  def round(self, tol:float = 0., device='cpu') -> TreeBasedTensor:
+  def round(self, tol: float = 0., device='cpu', ranks=None) -> TreeBasedTensor:
     """
-    Truncate tensor ranks to specified tolerance using SVD.
+    Truncate the ranks to a relative tolerance (in place).
 
-    The truncation runs on device and the cores are moved back afterwards. The
-    default is the CPU, since the SVDs are small and on a GPU each of them
-    synchronizes with the host anyway. With device=None the cores are not moved.
+    The tensor is orthogonalized first and every edge is truncated once, so
+    that ||u - round(u)|| <= tol ||u|| (Frobenius norm).
+
+    Parameters
+    ----------
+    tol: float, optional
+      Relative tolerance. Default 0 (no truncation).
+    device: str or torch.device, optional
+      Device for the truncation, the cores are moved back afterwards.
+      Default 'cpu'. None: the cores are not moved.
+    ranks: sequence of int, optional
+      Maximal rank of the edge above every node, indexed by node id (the
+      entry of the root is ignored). Default: no maximal ranks.
+
+    Returns
+    -------
+    tensor: TreeBasedTensor
+      The rounded tensor (self).
     """
+    tol_edge = tol / np.sqrt(max(self.tree.n_nodes - 1, 1))
+    def rank_rule(node, s):
+      k = _fro_tol_rank(s, tol_edge)
+      return k if ranks is None else min(k, int(ranks[node.id]))
+    self._truncation_sweep(rank_rule, device)
+    return self
+
+  def singular_values(self, device='cpu') -> NodeIndexedList:
+    """
+    Singular values of the matricization of the tensor at every edge.
+
+    Parameters
+    ----------
+    device: str or torch.device, optional
+      Device for the SVDs, as in round. Default 'cpu'.
+
+    Returns
+    -------
+    sigma: NodeIndexedList
+      Decreasing singular values of the edge above every node, None for the
+      root.
+    """
+    return TreeBasedTensor(self)._truncation_sweep(lambda node, s: len(s), device)
+
+  def _truncation_sweep(self, rank_rule, device='cpu') -> NodeIndexedList:
+    """
+    Orthogonalize, then truncate every edge once (in place).
+
+    A sweep from the root moves the orthogonality center down by QR and
+    truncates the edge above a node on the way up, by an SVD of its core
+    matricized on its parent axis. In orthonormal form these are the singular
+    values of the tensor across the edge.
+
+    Parameters
+    ----------
+    rank_rule: callable
+      rank_rule(node, s) returns the rank kept for the edge above node, given
+      its decreasing singular values s.
+    device: str or torch.device, optional
+      Device for the sweep, as in round.
+
+    Returns
+    -------
+    sigma: NodeIndexedList
+      Singular values of every edge before its truncation, None for the root.
+    """
+    sigma = NodeIndexedList(self.tree.n_nodes * [None])
     with torch.no_grad():
       core_device = self.cores[self.tree.root].device
       if device is not None:
         for node in self.tree.node_list: self.cores[node] = self.cores[node].to(device)
 
-      def worker_trunc(node):
+      # orthonormal form, the root R factor holds the norm
+      root = self.tree.root
+      r = self._orth_subtree(root)
+      self.cores[root] = self.cores[root] * r.reshape(())
+
+      def truncate(node, M):
+        """ Truncated SVD of the matricization M of the edge above node: U and s v. """
+        U, S, V = torch.linalg.svd(M, full_matrices=False)
+        sigma[node] = S
+        k = rank_rule(node, S)
+        return U[:, :k], torch.diag(S[:k]) @ V[:k]
+
+      def worker(node):
         core = self.cores[node]
         if node.isleaf:
-          u,s,v = svd_cut_torch(core, tol=tol/np.sqrt(self.ndim), norm='fro')
+          u, sv = truncate(node, core)
           self.cores[node] = u
-          return torch.diag(s) @ v
-        else:
-          for i, child in enumerate(node.children):
-            r_c = core.shape[i]
-            core = torch.swapaxes(core, -1, i)
-            old_shape = core.shape[:-1]
-            core = core.reshape(-1, r_c)
-            u,s,v = svd_cut_torch(core, tol=tol/np.sqrt(self.ndim), norm='fro')
-            core = u
-            self.cores[child] = torch.tensordot(self.cores[child], torch.diag(s) @ v, dims=((-1,),(-1,)))
-            r = worker_trunc(child)
-            core = torch.tensordot(core, r, dims=((-1,),(-1,)))
-            core = core.reshape(old_shape + (-1,))
-            core = torch.swapaxes(core, -1, i)
-            self.cores[node] = core
+          return sv
+        for i, child in enumerate(node.children):
+          r_c = core.shape[i]
+          core = torch.swapaxes(core, -1, i)
+          old_shape = core.shape[:-1]
+          # downward: move the orthogonality center into the child
+          q, r = torch.linalg.qr(core.reshape(-1, r_c))
+          self.cores[child] = torch.tensordot(self.cores[child], r, dims=((-1,),(-1,)))
+          # upward: the child returns s v of its truncated edge
+          sv = worker(child)
+          core = torch.tensordot(q, sv, dims=((-1,),(-1,)))
+          core = core.reshape(old_shape + (-1,))
+          core = torch.swapaxes(core, -1, i)
+          self.cores[node] = core
+        if not node.isroot:
+          old_shape = core.shape[:-1]
+          u, sv = truncate(node, core.reshape(-1, core.shape[-1]))
+          self.cores[node] = u.reshape(old_shape + (-1,))
+          return sv
 
-          if not node.isroot:
-            old_shape = core.shape[:-1]
-            core = core.reshape(-1, core.shape[-1])
-            u,s,v = svd_cut_torch(core, tol=tol/np.sqrt(self.ndim), norm='fro')
-            core = u.reshape(old_shape + (-1,))
-            self.cores[node] = core
-            return torch.diag(s) @ v
-
-      worker_trunc(self.tree.root)
+      worker(root)
 
       if device is not None:
         for node in self.tree.node_list: self.cores[node] = self.cores[node].to(core_device)
-      return self
+    return sigma
 
   def requires_grad_(self, requires_grad: bool = True):
     """

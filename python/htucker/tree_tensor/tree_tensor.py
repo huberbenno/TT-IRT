@@ -48,6 +48,22 @@ def svd_cut(A, tol, alpha=0., norm=2):
     return U[:,:rank], S_reg[:rank], V[:rank]
 
 
+def _fro_tol_rank(s, tol):
+  """ Smallest rank whose discarded singular values have norm <= tol ||s||. """
+  s2 = np.cumsum(np.square(s[::-1]))
+  return int(s2.shape[0] - np.searchsorted(s2, s2[-1] * tol**2, side='left'))
+
+
+def _kron_core(core1, core2):
+  """
+  Kronecker product of two cores along every axis: each axis of the result has size
+  n1 * n2, with index i1 * n2 + i2.
+  """
+  perm_interleave = [i for pair in zip(range(core1.ndim), range(core1.ndim, 2 * core1.ndim)) for i in pair]
+  new_shape = [s1 * s2 for s1, s2 in zip(core1.shape, core2.shape)]
+  return np.tensordot(core1, core2, axes=0).transpose(perm_interleave).reshape(new_shape)
+
+
 class TreeBasedTensor:
   def __init__(self, cores, tree: Tree = None, dtype=None):
     """
@@ -62,7 +78,7 @@ class TreeBasedTensor:
       self.tree = copy.deepcopy(cores.tree)
       shape = cores.shape
       cores = cores.cores
-    elif isinstance(cores, (list, np.ndarray)) and isinstance(
+    elif isinstance(cores, (list, tuple, np.ndarray)) and isinstance(
         tree, Tree):
       assert tree.n_nodes == len(cores), f'Number of tree nodes must match number of cores ({tree.n_nodes} != {len(cores)}).'
       self.tree = copy.deepcopy(tree)
@@ -275,11 +291,7 @@ class TreeBasedTensor:
         self.cores[node] = new_core.reshape(self.shape[node.dim], -1)
 
       else:
-        perm_interleave = np.empty(2 * core1.ndim, dtype=int)
-        perm_interleave[::2] = np.arange(core1.ndim)
-        perm_interleave[1::2] = np.arange(core1.ndim, 2* core1.ndim)
-        new_shape = np.array(core1.shape) * np.array(core2.shape)
-        self.cores[node] = np.tensordot(core1, core2, axes=0).transpose(perm_interleave).reshape(new_shape)
+        self.cores[node] = _kron_core(core1, core2)
 
         for child in node.children:
           worker(child)
@@ -335,46 +347,67 @@ class TreeBasedTensor:
     neg.cores[neg.tree.root] *= -1
     return neg
 
-  def dot(self, other):
+  def _contract(self, other, conj: bool):
     """
-    Compute the dot product with another tensor.
-
-    Parameters
-    ----------
-    other: TreeTensor
-      Must have same tree and shape.
+    Sum of c(self) * other over all entries, c = conj or the identity. Every
+    subtree is contracted to an (r_self, r_other) matrix, which is applied to
+    the child axis of the core of other first, so a node with k children costs
+    about r^(k+2). Returns the (1, 1) matrix of the root.
     """
     assert self.tree == other.tree, 'Trees not compatible.'
     assert self.shape == other.shape, f'Shape mismatch: {self.shape} != {other.shape}'
 
     def worker(node):
-      core1 = self.cores[node]
-      core2 = other.cores[node]
+      cx, cy = self.cores[node], other.cores[node]
+      if conj: cx = cx.conj()
       if node.isleaf:
-        return np.einsum('ai,aj->ij', core1, core2).ravel()
-
-      else:
-        perm_interleave = np.empty(2 * core1.ndim, dtype=int)
-        perm_interleave[::2] = np.arange(core1.ndim)
-        perm_interleave[1::2] = np.arange(core1.ndim, 2* core1.ndim)
-        new_shape = np.array(core1.shape) * np.array(core2.shape)
-        core = np.tensordot(core1, core2, axes=0).transpose(perm_interleave).reshape(new_shape)
-
-        for child in node.children:
-          partial = worker(child)
-          core = np.tensordot(partial, core, axes=(0,0))
-
-        return core
+        return cx.T @ cy
+      for i, child in enumerate(node.children):
+        cy = np.moveaxis(np.tensordot(worker(child), cy, axes=([1], [i])), 0, i)
+      k = node.n_children
+      return np.tensordot(cx, cy, axes=(list(range(k)), list(range(k))))
 
     return worker(self.tree.root)
 
+  def inner(self, other):
+    """
+    Inner product sum(conj(self) * other) over all entries.
+
+    Parameters
+    ----------
+    other: TreeBasedTensor
+      Same tree and shape, the ranks may differ.
+
+    Returns
+    -------
+    value: numpy scalar
+      Complex for complex tensors.
+    """
+    return self._contract(other, conj=True).sum()
+
+  def dot(self, other):
+    """
+    Bilinear product sum(self * other) over all entries (no conjugation, see
+    inner).
+
+    Parameters
+    ----------
+    other: TreeBasedTensor
+      Same tree and shape, the ranks may differ.
+
+    Returns
+    -------
+    value: array of shape (1,)
+    """
+    return self._contract(other, conj=False).reshape(-1)
+
   def norm(self):
     """
-    Compute the Frobenius norm of the tensor.
+    Frobenius norm of the tensor, sqrt(inner(self, self)).
     """
-    return np.sqrt(self.dot(self))[0]
-  
-  def round(self, tol:float = 0.) -> TreeBasedTensor:
+    return np.sqrt(np.real(self.inner(self)))
+
+  def round(self, tol: float = 0., ranks=None) -> TreeBasedTensor:
     """
     Truncate the ranks to a relative tolerance (in place).
 
@@ -385,50 +418,95 @@ class TreeBasedTensor:
     ----------
     tol: float, optional
       Relative tolerance. Default 0 (no truncation).
+    ranks: sequence of int, optional
+      Maximal rank of the edge above every node, indexed by node id (the
+      entry of the root is ignored). Default: no maximal ranks.
 
     Returns
     -------
     tensor: TreeBasedTensor
       The rounded tensor (self).
     """
+    tol_edge = tol / np.sqrt(max(self.tree.n_nodes - 1, 1))
+    def rank_rule(node, s):
+      k = _fro_tol_rank(s, tol_edge)
+      return k if ranks is None else min(k, int(ranks[node.id]))
+    self._truncation_sweep(rank_rule)
+    return self
+
+  def singular_values(self) -> NodeIndexedList:
+    """
+    Singular values of the matricization of the tensor at every edge.
+
+    Returns
+    -------
+    sigma: NodeIndexedList
+      Decreasing singular values of the edge above every node, None for the
+      root.
+    """
+    return TreeBasedTensor(self)._truncation_sweep(lambda node, s: len(s))
+
+  def _truncation_sweep(self, rank_rule) -> NodeIndexedList:
+    """
+    Orthogonalize, then truncate every edge once (in place).
+
+    A sweep from the root moves the orthogonality center down by QR and
+    truncates the edge above a node on the way up, by an SVD of its core
+    matricized on its parent axis. In orthonormal form these are the singular
+    values of the tensor across the edge.
+
+    Parameters
+    ----------
+    rank_rule: callable
+      rank_rule(node, s) returns the rank kept for the edge above node, given
+      its decreasing singular values s.
+
+    Returns
+    -------
+    sigma: NodeIndexedList
+      Singular values of every edge before its truncation, None for the root.
+    """
+    sigma = NodeIndexedList(self.tree.n_nodes * [None])
+
     # orthonormal form, the root R factor holds the norm
     root = self.tree.root
     r = self._orth_subtree(root)
-    self.cores[root] = self.cores[root] * r[0, 0]
-    tol_edge = tol / np.sqrt(max(self.tree.n_nodes - 1, 1))
+    self.cores[root] = self.cores[root] * r.reshape(())
 
-    def worker_trunc(node):
+    def truncate(node, M):
+      """ Truncated SVD of the matricization M of the edge above node: U and s v. """
+      U, S, V = np.linalg.svd(M, full_matrices=False)
+      sigma[node] = S
+      k = rank_rule(node, S)
+      return U[:, :k], np.diag(S[:k]) @ V[:k]
+
+    def worker(node):
       core = self.cores[node]
       if node.isleaf:
-        u,s,v = svd_cut(core, tol=tol_edge, norm='fro')
+        u, sv = truncate(node, core)
         self.cores[node] = u
-        return np.diag(s) @ v
-      else:
-        for i, child in enumerate(node.children):
-          r_c = core.shape[i]
-          core = np.swapaxes(core, -1, i)
-          old_shape = core.shape[:-1]
-          # downward: move the orthogonality center into the child
-          q, r = np.linalg.qr(core.reshape(-1, r_c))
-          self.cores[child] = np.tensordot(self.cores[child], r, axes=(-1,-1))
-          # upward: the child returns s v of its truncated edge
-          sv = worker_trunc(child)
-          core = np.tensordot(q, sv, axes=(-1,-1))
-          core = core.reshape(old_shape + (-1,))
-          core = np.swapaxes(core, -1, i)
-          self.cores[node] = core
+        return sv
+      for i, child in enumerate(node.children):
+        r_c = core.shape[i]
+        core = np.swapaxes(core, -1, i)
+        old_shape = core.shape[:-1]
+        # downward: move the orthogonality center into the child
+        q, r = np.linalg.qr(core.reshape(-1, r_c))
+        self.cores[child] = np.tensordot(self.cores[child], r, axes=(-1, -1))
+        # upward: the child returns s v of its truncated edge
+        sv = worker(child)
+        core = np.tensordot(q, sv, axes=(-1, -1))
+        core = core.reshape(old_shape + (-1,))
+        core = np.swapaxes(core, -1, i)
+        self.cores[node] = core
+      if not node.isroot:
+        old_shape = core.shape[:-1]
+        u, sv = truncate(node, core.reshape(-1, core.shape[-1]))
+        self.cores[node] = u.reshape(old_shape + (-1,))
+        return sv
 
-        if not node.isroot:
-          old_shape = core.shape[:-1]
-          core = core.reshape(-1, core.shape[-1])
-          u,s,v = svd_cut(core, tol=tol_edge, norm='fro')
-          core = u.reshape(old_shape + (-1,))
-          self.cores[node] = core
-          return np.diag(s) @ v
-
-    worker_trunc(root)
-
-    return self
+    worker(root)
+    return sigma
 
   def _orth_subtree(self, node : TreeNode):
     core = self.cores[node]

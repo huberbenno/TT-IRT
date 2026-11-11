@@ -348,6 +348,58 @@ def test_round_error_within_tol(backend, tree_type, tol):
   x.round(tol)
   assert np.linalg.norm(x.numpy() - X) <= tol * np.linalg.norm(X) * (1 + 1e-10)
 
+def dense_singular_values(X, dims):
+  """ Singular values of the matricization of the dense tensor X with the axes dims as rows. """
+  M = np.moveaxis(X, list(dims), list(range(len(dims))))
+  return np.linalg.svd(M.reshape(int(np.prod([X.shape[d] for d in dims])), -1), compute_uv=False)
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+@pytest.mark.parametrize('cond', [1., 1e2])
+def test_singular_values_match_dense(backend, tree_type, cond):
+  tree = Tree.from_tupletree(TREES[tree_type])
+  x = regauge(backend, sum_of_rank1(backend, tree), cond)
+  X = x.numpy()
+  sigma = x.singular_values()
+  assert_dense(x, X, rtol=0, atol=0) # x is not changed
+  dims = tree.get_subtree_dims()
+  for node in tree.node_list:
+    if node.isroot:
+      assert sigma[node] is None
+      continue
+    s, ref = np.asarray(sigma[node]), dense_singular_values(X, dims[node])
+    n = min(len(s), len(ref))
+    assert np.allclose(s[:n], ref[:n], rtol=1e-8, atol=1e-10 * ref[0]), f'node {node.id}'
+    # beyond the common length only (numerically) zero singular values
+    assert np.all(s[n:] <= 1e-10 * ref[0]) and np.all(ref[n:] <= 1e-10 * ref[0])
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_round_to_ranks(backend, tree_type):
+  tree = Tree.from_tupletree(TREES[tree_type])
+  x = sum_of_rank1(backend, tree)
+  X = x.numpy()
+  sigma = x.singular_values()
+  full = [0 if node.isroot else len(sigma[node]) for node in tree.node_list]
+  # full ranks keep the tensor
+  y = backend.TT(x).round(ranks=full)
+  assert_dense(y, X, rtol=1e-10, atol=1e-10 * np.linalg.norm(X))
+  # ranks reduced by one: at most these ranks, error bounded by the discarded singular values
+  target = [max(r - 1, 1) for r in full]
+  y = backend.TT(x).round(ranks=target)
+  assert all(y.cores[node].shape[-1] <= target[node.id] for node in tree.node_list if not node.isroot)
+  bound = np.sqrt(sum(float(np.sum(np.asarray(sigma[node][target[node.id]:])**2)) for node in tree.node_list
+                      if not node.isroot))
+  assert np.linalg.norm(y.numpy() - X) <= bound * (1 + 1e-8)
+
+def test_round_ranks_and_tol(backend):
+  # with both, the smaller of the two ranks is kept
+  tree = Tree.from_tupletree(TREES['random'])
+  x = sum_of_rank1(backend, tree)
+  by_tol = ranks(backend.TT(x).round(1e-2))
+  big = [100] * tree.n_nodes
+  assert ranks(backend.TT(x).round(1e-2, ranks=big)) == by_tol
+  ones = [1] * tree.n_nodes
+  assert ranks(backend.TT(x).round(1e-2, ranks=ones)) == [1] * (tree.n_nodes - 1)
+
 @pytest.mark.parametrize('tree_type', TREES.keys())
 def test_round_gauge_invariant(backend, tree_type):
   # rounding the same tensor in another gauge gives the same ranks and the same tensor
@@ -561,3 +613,26 @@ def test_numpy_randn_same_values():
   x64 = NumpyTT.randn(tree, (3,) * tree.order, 2, seed=0)
   x32 = NumpyTT.randn(tree, (3,) * tree.order, 2, seed=0, dtype=np.float32)
   assert all(np.array_equal(c32, c64.astype(np.float32)) for c32, c64 in zip(x32.cores, x64.cores))
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_inner(backend, tree_type):
+  x, y = operands(backend, tree_type)
+  X, Y = x.numpy(), y.numpy()
+  assert np.asarray(x.inner(y)).ndim == 0
+  assert x.inner(y).item() == pytest.approx(np.vdot(X, Y), rel=1e-12)
+  assert x.inner(x).item() == pytest.approx(x.norm().item() ** 2, rel=1e-12)
+
+@pytest.mark.parametrize('tree_type', ['balanced-01234', 'linear-01234'])
+def test_inner_complex(backend, tree_type):
+  # inner conjugates the first operand, dot does not, norm is real
+  x, y = operands(backend, tree_type)
+  xc = backend.TT([a + 1j * a ** 2 for a in x.cores], x.tree)
+  yc = backend.TT([a - 1j * a ** 3 for a in y.cores], y.tree)
+  Xc, Yc = xc.numpy(), yc.numpy()
+  assert xc.inner(yc).item() == pytest.approx(np.vdot(Xc, Yc), rel=1e-12)
+  assert xc.dot(yc).item() == pytest.approx(np.sum(Xc * Yc), rel=1e-12)
+  assert xc.norm().item() == pytest.approx(np.linalg.norm(Xc), rel=1e-12)
+
+def test_from_tuple_of_cores(backend):
+  x, _ = operands(backend, 'balanced-01234')
+  assert_dense(backend.TT(tuple(x.cores), x.tree), x.numpy(), rtol=0, atol=0)
