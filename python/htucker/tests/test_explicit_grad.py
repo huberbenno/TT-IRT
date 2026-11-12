@@ -4,7 +4,7 @@ import torch
 from tree.tree import Tree
 from tree.tree_util import zero_root_tupletree, random_nary_tupletree
 from tree_tensor.tree_tensor_torch import TreeBasedTensor
-from tree_tensor_training.training import ARGS_tree_tensor_training, ExplicitGradTreeTensor, optimize_core, lstsq_core, \
+from tree_tensor_training.training import ARGS_tree_tensor_training, ExplicitGradTreeTensor, optimize_core, lstsq_core, local_gram_trace, \
   orthonormalize_phys_leaf, reduced_sweep
 
 
@@ -170,3 +170,31 @@ def test_preconditioned_lstsq_solves_leaves_in_one_iteration(tree_type):
       res = torch.linalg.norm(A @ core.ravel() - target.ravel())
       res_ref = torch.linalg.norm(A @ x_ref - target.ravel())
       assert res <= res_ref * (1 + 1e-8), f'residual {res:.6e} above least squares residual {res_ref:.6e} at leaf {node.id}'
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+def test_local_gram_trace_matches_dense(tree_type):
+  tree, tensor, ind, target = setup(TREES[tree_type], N=20, rank=2)
+  model = ExplicitGradTreeTensor(tensor)
+  with torch.no_grad():
+    model.forward(ind)
+    for node, E in model.dfs(update_up=True):
+      A, _ = dense_local_problem(model, node, E, target)
+      assert torch.allclose(local_gram_trace(model, node, E), torch.sum(A * A), rtol=1e-10), f'node {node.id}'
+
+@pytest.mark.parametrize('tree_type', TREES.keys())
+@pytest.mark.parametrize('precondition', [False, True])
+def test_ridge_lstsq_core_matches_dense_ridge(tree_type, precondition):
+  """ With enough CGLS iterations the core solves (A^T A + mu I) x = A^T b, mu = ridge * tr(A^T A) / numel. """
+  ridge = 1e-2
+  tree, tensor, ind, target = setup(TREES[tree_type], N=50, rank=2)
+  model = ExplicitGradTreeTensor(tensor)
+  with torch.no_grad():
+    model.forward(ind)
+    for node, E in model.dfs(update_up=True):
+      core = model.tensor.cores[node]
+      A, _ = dense_local_problem(model, node, E, target)
+      mu = ridge * torch.sum(A * A) / core.numel()
+      x_ref = torch.linalg.solve(A.T @ A + mu * torch.eye(A.shape[1], dtype=A.dtype), A.T @ target.ravel())
+      lstsq_core(model, node, E, target, n_iter=3 * core.numel(), precondition=precondition, ridge=ridge)
+      # regularized, so the solution is unique
+      assert torch.allclose(core.ravel(), x_ref, rtol=1e-6, atol=1e-8 * torch.linalg.norm(x_ref)), f'node {node.id}'
